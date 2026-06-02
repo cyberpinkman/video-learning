@@ -14,7 +14,7 @@ Use this skill when the user asks to analyze, deconstruct, imitate, recreate, or
 - Default output language is Chinese.
 - Every important claim must point to a timestamp, shot row, transcript segment, or stored report.
 - The output must be directly usable for shooting and editing: script, shot list, scene/prop/light notes, shooting order, edit steps.
-- Do not integrate with GBrain or assume any GBrain memory exists.
+- Use only this project's MCP tools, local database, and timestamped evidence.
 
 ## Workflow
 
