@@ -71,6 +71,21 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
     },
   }, async input => toolResult(await handlers.get_content_analyze_single_report(input)));
 
+  server.registerTool("content_analyze_account", {
+    description: "Analyze multiple videos from the same author account using transcript-only single-video content analyses.",
+    inputSchema: {
+      video_ids: z.array(z.string()).min(1),
+    },
+  }, async input => toolResult(await handlers.content_analyze_account(input)));
+
+  server.registerTool("get_content_analyze_account_report", {
+    description: "Return an account-level content strategy analysis report.",
+    inputSchema: {
+      account_analysis_id: z.string(),
+      format: z.enum(["full", "brief"]).optional(),
+    },
+  }, async input => toolResult(await handlers.get_content_analyze_account_report(input)));
+
   server.registerTool("compare_videos", {
     description: "Compare a target video with reference videos for reusable structure and shooting patterns.",
     inputSchema: {

@@ -8,6 +8,8 @@ export type ReportFormat = "full" | "shooting_brief" | "shot_list" | "edit_brief
 
 export type ContentReportFormat = "full" | "brief" | "transcript";
 
+export type AccountContentReportFormat = "full" | "brief";
+
 export type ContentAnalysisProvider = "openai" | "dashscope" | "local";
 
 export type ContentConfidence = "high" | "medium" | "low" | "unknown";
@@ -102,6 +104,47 @@ export interface ContentAnalysisRecord {
   model: string;
   transcriptHash: string;
   contentJson: ContentAnalysisContent;
+  createdAt: string;
+}
+
+export interface AccountEvidenceItem {
+  claim?: string;
+  name?: string;
+  pattern?: string;
+  reason?: string;
+  evidence: string;
+  videos: string[];
+}
+
+export interface AccountRepresentativeVideo {
+  videoId: string;
+  reason: string;
+  evidence: string;
+}
+
+export interface AccountContentAnalysisContent {
+  positioning: AccountEvidenceItem;
+  audience: AccountEvidenceItem;
+  contentPillars: AccountEvidenceItem[];
+  hookPatterns: AccountEvidenceItem[];
+  argumentPatterns: AccountEvidenceItem[];
+  keywords: AccountEvidenceItem[];
+  representativeVideos: AccountRepresentativeVideo[];
+  reusableTemplates: AccountEvidenceItem[];
+  opportunities: AccountEvidenceItem[];
+  risks: AccountEvidenceItem[];
+  confidence: ContentConfidence;
+  evidenceNotes: string[];
+}
+
+export interface AccountContentAnalysisRecord {
+  id: string;
+  author: string;
+  videoIds: string[];
+  singleAnalysisIds: string[];
+  provider: ContentAnalysisProvider;
+  model: string;
+  contentJson: AccountContentAnalysisContent;
   createdAt: string;
 }
 

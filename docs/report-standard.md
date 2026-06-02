@@ -106,6 +106,22 @@ Required sections:
 
 Every important content claim must map to a transcript segment or stored content analysis. If transcript evidence is missing, the report must say "证据不足" instead of inferring from the video file.
 
+## content-analyze-account report sections
+
+Account content reports must use only local `content-analyze-single` results and their transcript evidence. They must not fetch account pages, infer from visuals, or mix multiple authors.
+
+Required sections:
+
+1. Account metadata and evidence status.
+2. Account positioning and target audience.
+3. Content pillars with representative video ids and transcript timestamp evidence.
+4. Hook patterns and argument patterns with evidence.
+5. Keywords and representative videos.
+6. Reusable content templates and opportunities.
+7. Risks and evidence self-check.
+
+Every account-level claim must reference at least one participating video id and transcript/content evidence. If the input videos have mixed or missing authors, or if any participating video lacks non-empty transcript evidence, account analysis must fail with the concrete video id.
+
 ## Confidence labels
 
 - `high`: Directly supported by timestamps, visual descriptions, transcript, or measured metrics.
@@ -143,6 +159,16 @@ bun run src/cli.ts content-report-single <video_id> \
   --workspace .video-learning-data \
   --db .video-learning-data/video-learning.sqlite \
   --out reports/<video_id>-content-full.md
+```
+
+Generate an account content analysis report:
+
+```bash
+bun run src/cli.ts content-report-account <account_analysis_id> \
+  --format full \
+  --workspace .video-learning-data \
+  --db .video-learning-data/video-learning.sqlite \
+  --out reports/<account_analysis_id>-account-full.md
 ```
 
 Open-source repositories should commit this standard, not the generated reports.

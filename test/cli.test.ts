@@ -19,6 +19,10 @@ async function runCli(args: string[]): Promise<{ exitCode: number; stdout: strin
   const proc = Bun.spawn({
     cmd: [process.execPath, "run", join(projectRoot, "src", "cli.ts"), ...args],
     cwd: projectRoot,
+    env: {
+      ...process.env,
+      VIDEO_LEARNING_TEXT_PROVIDER: "off",
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -107,4 +111,64 @@ test("content-report-single can write transcript-only markdown", async () => {
   expect(JSON.parse(result.stdout).path).toBe(outPath);
   expect(readFileSync(outPath, "utf8")).toContain("## 逐段转写");
   expect(readFileSync(outPath, "utf8")).toContain("[00:00.000-00:02.000]");
+});
+
+test("content-analyze-account and content-report-account write a stable account report", async () => {
+  const dbPath = join(workdir, "video-learning.sqlite");
+  const outPath = join(workdir, "reports", "account-full.md");
+  const store = new VideoLearningStore({ dbPath });
+  const first = store.createVideoRecord({
+    platform: "douyin",
+    sourceUrl: null,
+    title: "账号第一条",
+    author: "账号作者",
+    publishedAt: null,
+    durationSec: 10,
+    contentHash: "account-cli-1",
+    status: "analyzed",
+  });
+  const second = store.createVideoRecord({
+    platform: "douyin",
+    sourceUrl: null,
+    title: "账号第二条",
+    author: "账号作者",
+    publishedAt: null,
+    durationSec: 12,
+    contentHash: "account-cli-2",
+    status: "analyzed",
+  });
+  for (const [videoId, title] of [[first, "账号第一条"], [second, "账号第二条"]] as const) {
+    store.replaceTranscript(videoId, [
+      { startSec: 0, endSec: 2, speaker: "S1", text: `${title} 先讲选题痛点`, wordsPerMinute: 200, keywords: ["选题", "痛点"] },
+    ]);
+    store.saveContentAnalysis(videoId, {
+      provider: "local",
+      model: "fallback",
+      transcriptHash: `${videoId}-hash`,
+      contentJson: {
+        topic: `${title}选题`,
+        audience: "新手创作者",
+        hook: "先讲痛点",
+        structure: [{ startSec: 0, endSec: 2, summary: "痛点开场", evidence: "[00:00.000-00:02.000]" }],
+        arguments: ["给出解决路径"],
+        quotes: [`${title} 先讲选题痛点`],
+        keywords: ["选题", "痛点"],
+        reusableFramework: "痛点-方法",
+        risks: ["机器转写需复核"],
+        confidence: "low",
+        evidenceNotes: ["仅基于转写"],
+      },
+    });
+  }
+
+  const analyze = await runCli(["content-analyze-account", first, second, "--db", dbPath, "--workspace", workdir]);
+  expect(analyze.exitCode).toBe(0);
+  const accountAnalysisId = JSON.parse(analyze.stdout).account_analysis_id;
+
+  const report = await runCli(["content-report-account", accountAnalysisId, "--db", dbPath, "--workspace", workdir, "--format", "full", "--out", outPath]);
+
+  expect(report.exitCode).toBe(0);
+  expect(JSON.parse(report.stdout).path).toBe(outPath);
+  expect(readFileSync(outPath, "utf8")).toContain("## 账号定位");
+  expect(readFileSync(outPath, "utf8")).toContain("## 内容支柱");
 });

@@ -5,7 +5,7 @@ import { createStore, resolveRuntimeConfig } from "./config.ts";
 import { runMcpServer } from "./mcp.ts";
 import { createToolHandlers } from "./tools.ts";
 import { listAdapterStatuses } from "./adapters.ts";
-import type { ContentReportFormat, Platform, ReportFormat } from "./types.ts";
+import type { AccountContentReportFormat, ContentReportFormat, Platform, ReportFormat } from "./types.ts";
 
 interface ParsedArgs {
   command: string;
@@ -45,6 +45,8 @@ Commands:
   deep-report-single <video_id> [--format full|shooting_brief|shot_list|edit_brief] [--out <path>]
   content-analyze-single <video_id>
   content-report-single <video_id> [--format full|brief|transcript] [--out <path>]
+  content-analyze-account <video_id...>
+  content-report-account <account_analysis_id> [--format full|brief] [--out <path>]
   search <query> [--platform <platform>]
   adapters
   mcp
@@ -67,7 +69,7 @@ function printJson(value: unknown): void {
 }
 
 function ensureReadableDatabase(command: string, flags: Record<string, string | boolean>): void {
-  if (command !== "deep-report-single" && command !== "content-report-single") return;
+  if (command !== "deep-report-single" && command !== "content-report-single" && command !== "content-report-account") return;
   const config = resolveRuntimeConfig(globalConfig(flags));
   if (!existsSync(config.dbPath)) {
     throw new Error(`Database not found: ${config.dbPath}. Refusing to create an empty database for report output.`);
@@ -159,6 +161,29 @@ async function main(): Promise<void> {
         mkdirSync(dirname(outPath), { recursive: true });
         writeFileSync(outPath, result.report);
         printJson({ video_id: videoId, format: result.format, path: outPath });
+        break;
+      }
+      console.log(result.report);
+      break;
+    }
+    case "content-analyze-account": {
+      const videoIds = parsed.positionals;
+      if (videoIds.length === 0) throw new Error("Usage: video-learning content-analyze-account <video_id...>");
+      printJson(await tools.content_analyze_account({ video_ids: videoIds }));
+      break;
+    }
+    case "content-report-account": {
+      const accountAnalysisId = parsed.positionals[0];
+      if (!accountAnalysisId) throw new Error("Usage: video-learning content-report-account <account_analysis_id>");
+      const result = await tools.get_content_analyze_account_report({
+        account_analysis_id: accountAnalysisId,
+        format: (parsed.flags.format as AccountContentReportFormat | undefined) ?? "full",
+      });
+      if (typeof parsed.flags.out === "string") {
+        const outPath = resolve(parsed.flags.out);
+        mkdirSync(dirname(outPath), { recursive: true });
+        writeFileSync(outPath, result.report);
+        printJson({ account_analysis_id: accountAnalysisId, format: result.format, path: outPath });
         break;
       }
       console.log(result.report);

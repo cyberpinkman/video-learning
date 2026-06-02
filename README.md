@@ -1,6 +1,6 @@
 # video-learning
 
-独立本地视频学习系统。`video-learning` 是项目总名称；当前包含单视频深度拉片 `deep-analyze-single` 和单视频内容分析 `content-analyze-single`，并为账号级内容分析 `content-analyze-account` 预留结构。
+独立本地视频学习系统。`video-learning` 是项目总名称；当前包含单视频深度拉片 `deep-analyze-single`、单视频内容分析 `content-analyze-single` 和账号级内容分析 `content-analyze-account`。
 
 ## Quick Start
 
@@ -23,6 +23,10 @@ bun run src/cli.ts deep-report-single <video_id> --format full
 bun run src/cli.ts content-analyze-single <video_id>
 bun run src/cli.ts content-report-single <video_id> --format full
 
+# 账号级内容分析：传入同一作者的多条本地视频 id，自动补跑缺失的 single 内容分析；任一视频缺少转写证据会失败
+bun run src/cli.ts content-analyze-account <video_id_1> <video_id_2>
+bun run src/cli.ts content-report-account <account_analysis_id> --format full
+
 # 稳定交付：把数据库/素材放项目本地持久工作区，把 Markdown 报告写入 reports/
 PROJECT_HOME="$PWD"
 VL_HOME="$PROJECT_HOME/.video-learning-data"
@@ -30,6 +34,8 @@ bun run src/cli.ts deep-analyze-single <video_id> --workspace "$VL_HOME" --db "$
 bun run src/cli.ts deep-report-single <video_id> --format full --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite" --out "$PROJECT_HOME/reports/<video_id>-deep-full.md"
 bun run src/cli.ts content-analyze-single <video_id> --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite"
 bun run src/cli.ts content-report-single <video_id> --format full --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite" --out "$PROJECT_HOME/reports/<video_id>-content-full.md"
+bun run src/cli.ts content-analyze-account <video_id_1> <video_id_2> --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite"
+bun run src/cli.ts content-report-account <account_analysis_id> --format full --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite" --out "$PROJECT_HOME/reports/<account_analysis_id>-account-full.md"
 
 # 启动 MCP stdio server
 bun run src/cli.ts mcp
@@ -41,7 +47,7 @@ bun run src/cli.ts mcp
 
 - `/tmp` 只允许用于一次性 smoke test，不作为报告、数据库或可审阅产物的保存位置。
 - 可复查产物必须放在稳定路径：数据库/下载/关键帧放 `.video-learning-data/` 或 `~/.video-learning/`，Markdown 报告放 `reports/`。
-- `deep-report-single --out <path>` 和 `content-report-single --out <path>` 会把可读 Markdown 写到指定文件。
+- `deep-report-single --out <path>`、`content-report-single --out <path>` 和 `content-report-account --out <path>` 会把可读 Markdown 写到指定文件。
 - 报告命令不会再为不存在的 `--db` 路径静默创建空库；缺失数据库会直接失败。
 
 ## Tools
@@ -54,6 +60,8 @@ MCP 工具：
 - `get_deep_analyze_single_report(video_id, format?)`
 - `content_analyze_single(video_id)`
 - `get_content_analyze_single_report(video_id, format?)`
+- `content_analyze_account(video_ids[])`
+- `get_content_analyze_account_report(account_analysis_id, format?)`
 - `compare_videos(target_id, reference_ids[])`
 - `search_video_memory(query, filters?)`
 - `make_recreation_plan(video_id, constraints?)`
@@ -252,3 +260,5 @@ export VIDEO_LEARNING_CLOUD_REQUEST_TIMEOUT_MS=120000
 禁止只输出泛泛总结。
 
 内容分析报告必须只引用转写时间段，包含主题、受众、内容 hook、内容结构、核心论点、关键表达、关键词、可复用内容框架和风险提示；不得包含景别、运镜、逐镜头表或复拍镜头清单。
+
+账号级内容分析报告必须只引用传入视频的 single 内容分析和转写证据，包含账号定位、目标受众、内容支柱、hook 模式、论点结构、关键词、代表视频、可复用模板、机会点和风险提示；任一视频缺少非空转写证据时直接失败；每条账号级策略结论都必须附带参与视频 id 和 transcript 时间段；不做账号主页抓取、自动下载或跨账号对比。

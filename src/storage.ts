@@ -7,6 +7,8 @@ import { redactSecrets } from "./redact.ts";
 import type {
   AcquisitionAttemptInput,
   AcquisitionAttemptRecord,
+  AccountContentAnalysisContent,
+  AccountContentAnalysisRecord,
   AssetRecord,
   ContentAnalysisContent,
   ContentAnalysisProvider,
@@ -155,6 +157,17 @@ export class VideoLearningStore {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS account_content_analyses (
+        id TEXT PRIMARY KEY,
+        author TEXT NOT NULL,
+        video_ids TEXT NOT NULL,
+        single_analysis_ids TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        content_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS recreation_plans (
         id TEXT PRIMARY KEY,
         video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -167,6 +180,7 @@ export class VideoLearningStore {
       CREATE INDEX IF NOT EXISTS idx_shots_video ON shots(video_id, shot_index);
       CREATE INDEX IF NOT EXISTS idx_transcript_video ON transcript_segments(video_id, segment_index);
       CREATE INDEX IF NOT EXISTS idx_content_analyses_video ON content_analyses(video_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_account_content_analyses_author ON account_content_analyses(author, created_at);
       CREATE INDEX IF NOT EXISTS idx_attempts_created ON acquisition_attempts(created_at);
     `);
   }
@@ -316,6 +330,31 @@ export class VideoLearningStore {
     return analysisId;
   }
 
+  saveAccountContentAnalysis(input: {
+    author: string;
+    videoIds: string[];
+    singleAnalysisIds: string[];
+    provider: ContentAnalysisProvider;
+    model: string;
+    contentJson: AccountContentAnalysisContent;
+  }): string {
+    const analysisId = id("acct");
+    this.db.query(`
+      INSERT INTO account_content_analyses (id, author, video_ids, single_analysis_ids, provider, model, content_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      analysisId,
+      input.author,
+      JSON.stringify(input.videoIds),
+      JSON.stringify(input.singleAnalysisIds),
+      input.provider,
+      input.model,
+      JSON.stringify(input.contentJson),
+      nowIso(),
+    );
+    return analysisId;
+  }
+
   saveRecreationPlan(videoId: string, constraints: Record<string, unknown>, content: string): string {
     const planId = id("plan");
     this.db.query("INSERT INTO recreation_plans (id, video_id, constraints_json, content, created_at) VALUES (?, ?, ?, ?, ?)")
@@ -379,6 +418,11 @@ export class VideoLearningStore {
   getLatestContentAnalysis(videoId: string): ContentAnalysisRecord | null {
     const row = this.db.query("SELECT * FROM content_analyses WHERE video_id = ? ORDER BY created_at DESC LIMIT 1").get(videoId) as Record<string, unknown> | null;
     return row ? this.mapContentAnalysis(row) : null;
+  }
+
+  getAccountContentAnalysis(analysisId: string): AccountContentAnalysisRecord | null {
+    const row = this.db.query("SELECT * FROM account_content_analyses WHERE id = ?").get(analysisId) as Record<string, unknown> | null;
+    return row ? this.mapAccountContentAnalysis(row) : null;
   }
 
   listAcquisitionAttempts(): AcquisitionAttemptRecord[] {
@@ -462,6 +506,32 @@ export class VideoLearningStore {
         quotes: [],
         keywords: [],
         reusableFramework: "",
+        risks: [],
+        confidence: "unknown",
+        evidenceNotes: [],
+      }),
+      createdAt: String(row.created_at),
+    };
+  }
+
+  private mapAccountContentAnalysis(row: Record<string, unknown>): AccountContentAnalysisRecord {
+    return {
+      id: String(row.id),
+      author: String(row.author),
+      videoIds: jsonParse(String(row.video_ids ?? "[]"), []),
+      singleAnalysisIds: jsonParse(String(row.single_analysis_ids ?? "[]"), []),
+      provider: row.provider as ContentAnalysisProvider,
+      model: String(row.model),
+      contentJson: jsonParse(String(row.content_json ?? "{}"), {
+        positioning: { claim: "", evidence: "", videos: [] },
+        audience: { claim: "", evidence: "", videos: [] },
+        contentPillars: [],
+        hookPatterns: [],
+        argumentPatterns: [],
+        keywords: [],
+        representativeVideos: [],
+        reusableTemplates: [],
+        opportunities: [],
         risks: [],
         confidence: "unknown",
         evidenceNotes: [],

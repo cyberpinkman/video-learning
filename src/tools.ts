@@ -1,11 +1,13 @@
 import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import type { VideoLearningStore } from "./storage.ts";
+import { analyzeAccountContent } from "./account-content.ts";
+import { generateAccountContentReport } from "./account-content-report.ts";
 import { maybeEnrichShotsWithCloud } from "./cloud.ts";
 import { analyzeContentFromTranscript } from "./content.ts";
 import { generateContentReport } from "./content-report.ts";
 import { generateRecreationReport } from "./report.ts";
-import type { AnalysisDepth, ContentReportFormat, Platform, ProcessingResult, ReportFormat, TranscriptProcessingResult } from "./types.ts";
+import type { AccountContentReportFormat, AnalysisDepth, ContentReportFormat, Platform, ProcessingResult, ReportFormat, TranscriptProcessingResult, VideoRecord } from "./types.ts";
 
 export interface ToolContext {
   store: VideoLearningStore;
@@ -20,6 +22,8 @@ export interface ToolHandlers {
   get_deep_analyze_single_report(input: { video_id: string; format?: ReportFormat }): Promise<{ video_id: string; format: ReportFormat; report: string }>;
   content_analyze_single(input: { video_id: string }): Promise<{ video_id: string; status: string; analysis_id: string; report_id: string }>;
   get_content_analyze_single_report(input: { video_id: string; format?: ContentReportFormat }): Promise<{ video_id: string; format: ContentReportFormat; report: string }>;
+  content_analyze_account(input: { video_ids: string[] }): Promise<{ account_analysis_id: string; status: string; author: string; video_ids: string[]; single_analysis_ids: string[] }>;
+  get_content_analyze_account_report(input: { account_analysis_id: string; format?: AccountContentReportFormat }): Promise<{ account_analysis_id: string; format: AccountContentReportFormat; report: string }>;
   compare_videos(input: { target_id: string; reference_ids: string[] }): Promise<{ report: string }>;
   search_video_memory(input: { query: string; filters?: { platform?: Platform } }): Promise<{ results: Array<{ video_id: string; title: string; platform: Platform; status: string }> }>;
   make_recreation_plan(input: { video_id: string; constraints?: Record<string, unknown> }): Promise<{ video_id: string; plan: string; plan_id: string }>;
@@ -138,6 +142,22 @@ function existingTranscriptProcessing(store: VideoLearningStore, videoId: string
   };
 }
 
+function requireSameAuthor(videos: VideoRecord[]): string {
+  if (videos.length === 0) throw new Error("至少需要 1 个 video_id。");
+  const author = videos[0].author?.trim();
+  if (!author) throw new Error(`视频 ${videos[0].id} 作者为空，无法进行账号级内容分析。`);
+  for (const video of videos) {
+    const current = video.author?.trim();
+    if (!current) throw new Error(`视频 ${video.id} 作者为空，无法进行账号级内容分析。`);
+    if (current !== author) throw new Error(`作者不一致：${author} 与 ${current}。`);
+  }
+  return author;
+}
+
+function transcriptEvidence(store: VideoLearningStore, videoId: string) {
+  return store.listTranscript(videoId).filter(segment => segment.text.trim().length > 0);
+}
+
 export function createToolHandlers(ctx: ToolContext): ToolHandlers {
   const { store } = ctx;
 
@@ -248,6 +268,67 @@ export function createToolHandlers(ctx: ToolContext): ToolHandlers {
       const report = generateContentReport(store, input.video_id, format);
       store.saveAnalysisReport(input.video_id, `content_${format}`, report);
       return { video_id: input.video_id, format, report };
+    },
+
+    async content_analyze_account(input) {
+      if (input.video_ids.length === 0) throw new Error("至少需要 1 个 video_id。");
+      const videos = input.video_ids.map(videoId => {
+        const video = store.getVideo(videoId);
+        if (!video) throw new Error(`Video not found: ${videoId}`);
+        return video;
+      });
+      const author = requireSameAuthor(videos);
+      const accountVideos = [];
+      const singleAnalysisIds: string[] = [];
+      for (const video of videos) {
+        let analysis = store.getLatestContentAnalysis(video.id);
+        if (!analysis) {
+          try {
+            await this.content_analyze_single({ video_id: video.id });
+          } catch (error) {
+            throw new Error(`视频 ${video.id} 无法完成 content-analyze-single：${error instanceof Error ? error.message : String(error)}`);
+          }
+          analysis = store.getLatestContentAnalysis(video.id);
+        }
+        if (!analysis) throw new Error(`视频 ${video.id} 缺少 content-analyze-single 结果。`);
+        const transcriptSegments = transcriptEvidence(store, video.id);
+        if (transcriptSegments.length === 0) throw new Error(`视频 ${video.id} 缺少转写证据，无法进行账号级内容分析。`);
+        singleAnalysisIds.push(analysis.id);
+        accountVideos.push({
+          video,
+          analysisId: analysis.id,
+          content: analysis.contentJson,
+          transcriptSegments: transcriptSegments.map(segment => ({
+            startSec: segment.startSec,
+            endSec: segment.endSec,
+            text: segment.text,
+          })),
+        });
+      }
+      const account = await analyzeAccountContent({ author, videos: accountVideos });
+      const accountAnalysisId = store.saveAccountContentAnalysis({
+        author,
+        videoIds: videos.map(video => video.id),
+        singleAnalysisIds,
+        provider: account.provider,
+        model: account.model,
+        contentJson: account.content,
+      });
+      const report = generateAccountContentReport(store, accountAnalysisId, "full");
+      store.saveAnalysisReport(videos[0].id, "account_content_full", report);
+      return {
+        account_analysis_id: accountAnalysisId,
+        status: "account_content_analyzed",
+        author,
+        video_ids: videos.map(video => video.id),
+        single_analysis_ids: singleAnalysisIds,
+      };
+    },
+
+    async get_content_analyze_account_report(input) {
+      const format = input.format ?? "full";
+      const report = generateAccountContentReport(store, input.account_analysis_id, format);
+      return { account_analysis_id: input.account_analysis_id, format, report };
     },
 
     async compare_videos(input) {

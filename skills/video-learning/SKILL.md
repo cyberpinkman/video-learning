@@ -1,7 +1,7 @@
 ---
 name: video-learning
 description: |
-  Analyze, deconstruct, compare, and recreate social videos using the local video-learning MCP tools. Use deep-analyze-single for shot-level recreation analysis and content-analyze-single for transcript-only content analysis.
+  Analyze, deconstruct, compare, and recreate social videos using the local video-learning MCP tools. Use deep-analyze-single for shot-level recreation analysis, content-analyze-single for transcript-only single-video content analysis, and content-analyze-account for same-author multi-video strategy analysis.
 ---
 
 # Video Learning
@@ -30,8 +30,11 @@ Use this skill when the user asks to analyze, deconstruct, imitate, recreate, or
    - `full` for content structure, arguments, reusable framework, and transcript evidence.
    - `brief` for a compact content summary.
    - `transcript` for timestamped transcript only.
-6. For imitation or production requests, call `make_recreation_plan` with any user constraints such as budget, location, equipment, product, persona, or target platform.
-7. For multiple references, use `compare_videos` after each video is deep-analyzed.
+6. For same-author multi-video account content strategy requests, call `content_analyze_account` with explicit `video_ids`, then `get_content_analyze_account_report`:
+   - `full` for account positioning, content pillars, hook patterns, reusable templates, representative videos, and risks.
+   - `brief` for compact account strategy summary.
+7. For imitation or production requests, call `make_recreation_plan` with any user constraints such as budget, location, equipment, product, persona, or target platform.
+8. For multiple references, use `compare_videos` after each video is deep-analyzed.
 
 ## Output Bar
 
@@ -51,6 +54,15 @@ For content-analyze-single, a good answer includes:
 - 核心论点、关键表达、关键词、可复用内容框架。
 - 明确标注模型增强状态和转写置信度。
 - 不包含景别、运镜、逐镜头表或复拍镜头清单。
+
+For content-analyze-account, a good answer includes:
+
+- 账号定位、目标受众、内容支柱。
+- Hook 模式、论点结构、关键词和代表视频。
+- 可复用内容模板、机会点和风险提示。
+- 每个账号级结论都引用参与视频 id 和 transcript 时间段证据。
+- 任一参与视频缺少非空转写证据时，不生成账号策略总结。
+- 不做账号主页抓取、跨账号对比或视觉分析。
 
 ## Anti-Patterns
 
