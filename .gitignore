@@ -33,5 +33,7 @@ scripts/__pycache__/
 *.srt
 *.vtt
 reports/*.md
+reports/*.pdf
+reports/*.html
 !reports/README.md
 !reports/.gitkeep
