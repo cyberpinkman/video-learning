@@ -132,6 +132,96 @@ test("python worker imports sidecar VTT subtitles as transcript evidence", async
   expect(result.transcript[0].wordsPerMinute).toBeGreaterThan(0);
 });
 
+test("python worker transcribe command only emits audio and transcript evidence", async () => {
+  const videoPath = join(workdir, "content-only.mp4");
+  const vttPath = join(workdir, "content-only.vtt");
+  const outDir = join(workdir, "artifacts-content");
+  const ffmpeg = Bun.spawn({
+    cmd: [
+      "ffmpeg",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=duration=3:size=320x180:rate=24",
+      "-pix_fmt",
+      "yuv420p",
+      videoPath,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await ffmpeg.exited).toBe(0);
+  writeFileSync(vttPath, "WEBVTT\n\n00:00.000 --> 00:02.000\n只分析口播内容，不分析镜头\n");
+
+  const worker = Bun.spawn({
+    cmd: ["python3", "scripts/video_worker.py", "transcribe", videoPath, "--out-dir", outDir],
+    env: {
+      ...process.env,
+      VIDEO_LEARNING_STT_ENGINE: "off",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await new Response(worker.stdout).text();
+  const stderr = await new Response(worker.stderr).text();
+  expect(await worker.exited, stderr).toBe(0);
+  const result = JSON.parse(stdout);
+
+  expect(result.durationSec).toBeGreaterThan(2);
+  expect(result.transcript).toHaveLength(1);
+  expect(result.transcript[0].text).toBe("只分析口播内容，不分析镜头");
+  expect(result.shots).toBeUndefined();
+  expect(result.assets.some((asset: { kind: string }) => asset.kind === "keyframe")).toBe(false);
+});
+
+test("python worker transcribe command returns empty transcript for silent audio when STT is off", async () => {
+  const videoPath = join(workdir, "silent-content.mp4");
+  const outDir = join(workdir, "artifacts-silent-content");
+  const ffmpeg = Bun.spawn({
+    cmd: [
+      "ffmpeg",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=duration=2:size=320x180:rate=24",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=channel_layout=mono:sample_rate=16000",
+      "-shortest",
+      "-pix_fmt",
+      "yuv420p",
+      videoPath,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await ffmpeg.exited).toBe(0);
+
+  const worker = Bun.spawn({
+    cmd: ["python3", "scripts/video_worker.py", "transcribe", videoPath, "--out-dir", outDir],
+    env: {
+      ...process.env,
+      VIDEO_LEARNING_STT_ENGINE: "off",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await new Response(worker.stdout).text();
+  const stderr = await new Response(worker.stderr).text();
+  expect(await worker.exited, stderr).toBe(0);
+  const result = JSON.parse(stdout);
+
+  expect(result.transcript).toEqual([]);
+  expect(result.shots).toBeUndefined();
+});
+
 test("python worker can transcribe audio with built-in faster-whisper", async () => {
   const videoPath = join(workdir, "with-speech.mp4");
   const outDir = join(workdir, "artifacts-stt");

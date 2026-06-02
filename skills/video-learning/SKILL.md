@@ -1,7 +1,7 @@
 ---
 name: video-learning
 description: |
-  Analyze, deconstruct, compare, and recreate long-form social videos using the local video-learning MCP tools. Use for requests about analyzing a target video, dissecting a viral video, imitating a video's shooting style, generating a shot list, or making a practical recreation plan for Douyin, WeChat Channels, Xiaohongshu, TikTok, YouTube, screen recordings, or local video files.
+  Analyze, deconstruct, compare, and recreate social videos using the local video-learning MCP tools. Use deep-analyze-single for shot-level recreation analysis and content-analyze-single for transcript-only content analysis.
 ---
 
 # Video Learning
@@ -20,14 +20,18 @@ Use this skill when the user asks to analyze, deconstruct, imitate, recreate, or
 
 1. If the user gives a local file path or screen recording, call `ingest_video_file`.
 2. If the user gives a URL, call `acquire_video` with the apparent platform. If acquisition fails, ask for a local file or authorized screen recording.
-3. Call `analyze_video` with `depth: "standard"` unless the user explicitly wants a very detailed breakdown; then use `depth: "deep"`.
-4. Call `get_video_report`:
+3. For shot-level拉片/复拍 requests, call `deep_analyze_single` with `depth: "standard"` unless the user explicitly wants a very detailed breakdown; then use `depth: "deep"`.
+4. Call `get_deep_analyze_single_report`:
    - `full` for complete analysis.
    - `shooting_brief` for a practical filming plan.
    - `shot_list` for a shot table.
    - `edit_brief` for editing rhythm and structure.
-5. For imitation or production requests, call `make_recreation_plan` with any user constraints such as budget, location, equipment, product, persona, or target platform.
-6. For multiple references, use `compare_videos` after each video is analyzed.
+5. For transcript-only content requests, call `content_analyze_single`, then `get_content_analyze_single_report`:
+   - `full` for content structure, arguments, reusable framework, and transcript evidence.
+   - `brief` for a compact content summary.
+   - `transcript` for timestamped transcript only.
+6. For imitation or production requests, call `make_recreation_plan` with any user constraints such as budget, location, equipment, product, persona, or target platform.
+7. For multiple references, use `compare_videos` after each video is deep-analyzed.
 
 ## Output Bar
 
@@ -39,6 +43,14 @@ A good answer includes:
 - 节奏指标：镜头数、平均镜头时长、字幕密度、口播速度、B-roll 比例.
 - 复拍方案：脚本、镜头清单、场景/道具/光线、拍摄顺序、剪辑步骤.
 - 风险提示：可借鉴、不可照搬、需替换的素材或表达。
+
+For content-analyze-single, a good answer includes:
+
+- 主题、目标受众、内容 hook。
+- 只基于 transcript 时间段的内容结构。
+- 核心论点、关键表达、关键词、可复用内容框架。
+- 明确标注模型增强状态和转写置信度。
+- 不包含景别、运镜、逐镜头表或复拍镜头清单。
 
 ## Anti-Patterns
 

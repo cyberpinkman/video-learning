@@ -8,6 +8,9 @@ import type {
   AcquisitionAttemptInput,
   AcquisitionAttemptRecord,
   AssetRecord,
+  ContentAnalysisContent,
+  ContentAnalysisProvider,
+  ContentAnalysisRecord,
   Platform,
   ShotInput,
   ShotRecord,
@@ -142,6 +145,16 @@ export class VideoLearningStore {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS content_analyses (
+        id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        transcript_hash TEXT NOT NULL,
+        content_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS recreation_plans (
         id TEXT PRIMARY KEY,
         video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -153,6 +166,7 @@ export class VideoLearningStore {
       CREATE INDEX IF NOT EXISTS idx_assets_video ON assets(video_id);
       CREATE INDEX IF NOT EXISTS idx_shots_video ON shots(video_id, shot_index);
       CREATE INDEX IF NOT EXISTS idx_transcript_video ON transcript_segments(video_id, segment_index);
+      CREATE INDEX IF NOT EXISTS idx_content_analyses_video ON content_analyses(video_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_attempts_created ON acquisition_attempts(created_at);
     `);
   }
@@ -288,6 +302,20 @@ export class VideoLearningStore {
     return reportId;
   }
 
+  saveContentAnalysis(videoId: string, input: {
+    provider: ContentAnalysisProvider;
+    model: string;
+    transcriptHash: string;
+    contentJson: ContentAnalysisContent;
+  }): string {
+    const analysisId = id("cnt");
+    this.db.query(`
+      INSERT INTO content_analyses (id, video_id, provider, model, transcript_hash, content_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(analysisId, videoId, input.provider, input.model, input.transcriptHash, JSON.stringify(input.contentJson), nowIso());
+    return analysisId;
+  }
+
   saveRecreationPlan(videoId: string, constraints: Record<string, unknown>, content: string): string {
     const planId = id("plan");
     this.db.query("INSERT INTO recreation_plans (id, video_id, constraints_json, content, created_at) VALUES (?, ?, ?, ?, ?)")
@@ -341,6 +369,16 @@ export class VideoLearningStore {
 
   listTranscript(videoId: string): TranscriptSegmentRecord[] {
     return this.db.query("SELECT * FROM transcript_segments WHERE video_id = ? ORDER BY segment_index").all(videoId).map(row => this.mapTranscript(row as Record<string, unknown>));
+  }
+
+  listContentAnalyses(videoId: string): ContentAnalysisRecord[] {
+    return this.db.query("SELECT * FROM content_analyses WHERE video_id = ? ORDER BY created_at").all(videoId)
+      .map(row => this.mapContentAnalysis(row as Record<string, unknown>));
+  }
+
+  getLatestContentAnalysis(videoId: string): ContentAnalysisRecord | null {
+    const row = this.db.query("SELECT * FROM content_analyses WHERE video_id = ? ORDER BY created_at DESC LIMIT 1").get(videoId) as Record<string, unknown> | null;
+    return row ? this.mapContentAnalysis(row) : null;
   }
 
   listAcquisitionAttempts(): AcquisitionAttemptRecord[] {
@@ -405,6 +443,30 @@ export class VideoLearningStore {
       text: String(row.text),
       wordsPerMinute: row.words_per_minute === null || row.words_per_minute === undefined ? null : Number(row.words_per_minute),
       keywords: jsonParse(String(row.keywords ?? "[]"), []),
+    };
+  }
+
+  private mapContentAnalysis(row: Record<string, unknown>): ContentAnalysisRecord {
+    return {
+      id: String(row.id),
+      videoId: String(row.video_id),
+      provider: row.provider as ContentAnalysisProvider,
+      model: String(row.model),
+      transcriptHash: String(row.transcript_hash),
+      contentJson: jsonParse(String(row.content_json ?? "{}"), {
+        topic: "",
+        audience: "",
+        hook: "",
+        structure: [],
+        arguments: [],
+        quotes: [],
+        keywords: [],
+        reusableFramework: "",
+        risks: [],
+        confidence: "unknown",
+        evidenceNotes: [],
+      }),
+      createdAt: String(row.created_at),
     };
   }
 
