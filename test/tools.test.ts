@@ -27,8 +27,8 @@ test("MCP-facing tool handlers can ingest, analyze, and return a shooting brief"
   const tools = createToolHandlers({ store, workspaceDir: workdir, allowStubProcessing: true });
 
   const ingest = await tools.ingest_video_file({ path: videoPath, platform: "local" });
-  const analysis = await tools.analyze_video({ video_id: ingest.video_id, depth: "standard" });
-  const report = await tools.get_video_report({ video_id: ingest.video_id, format: "shooting_brief" });
+  const analysis = await tools.deep_analyze_single({ video_id: ingest.video_id, depth: "standard" });
+  const report = await tools.get_deep_analyze_single_report({ video_id: ingest.video_id, format: "shooting_brief" });
 
   expect(analysis.status).toBe("analyzed");
   expect(report.report).toContain("复拍方案");
@@ -78,8 +78,8 @@ test("tool analysis writes artifacts under a video-specific directory", async ()
   const first = await tools.ingest_video_file({ path: pathA, platform: "local" });
   const second = await tools.ingest_video_file({ path: pathB, platform: "local" });
 
-  await tools.analyze_video({ video_id: first.video_id, depth: "standard" });
-  await tools.analyze_video({ video_id: second.video_id, depth: "standard" });
+  await tools.deep_analyze_single({ video_id: first.video_id, depth: "standard" });
+  await tools.deep_analyze_single({ video_id: second.video_id, depth: "standard" });
 
   const firstKeyframe = store.listShots(first.video_id)[0].keyframePath;
   const secondKeyframe = store.listShots(second.video_id)[0].keyframePath;
@@ -118,8 +118,8 @@ test("report formats and compare output expose distinct behavior", async () => {
   ]);
   const tools = createToolHandlers({ store, workspaceDir: workdir, allowStubProcessing: true });
 
-  const full = await tools.get_video_report({ video_id: target, format: "full" });
-  const brief = await tools.get_video_report({ video_id: target, format: "shooting_brief" });
+  const full = await tools.get_deep_analyze_single_report({ video_id: target, format: "full" });
+  const brief = await tools.get_deep_analyze_single_report({ video_id: target, format: "shooting_brief" });
   const compare = await tools.compare_videos({ target_id: target, reference_ids: [reference] });
 
   expect(brief.report).not.toBe(full.report);

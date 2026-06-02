@@ -54,8 +54,8 @@ test("local mp4 E2E ingests, processes with worker, analyzes, and returns a full
   const tools = createToolHandlers({ store, workspaceDir: workdir });
 
   const ingest = await tools.ingest_video_file({ path: videoPath, platform: "local" });
-  const analysis = await tools.analyze_video({ video_id: ingest.video_id, depth: "standard" });
-  const report = await tools.get_video_report({ video_id: ingest.video_id, format: "full" });
+  const analysis = await tools.deep_analyze_single({ video_id: ingest.video_id, depth: "standard" });
+  const report = await tools.get_deep_analyze_single_report({ video_id: ingest.video_id, format: "full" });
 
   expect(analysis.status).toBe("analyzed");
   expect(store.listShots(ingest.video_id).length).toBeGreaterThan(0);

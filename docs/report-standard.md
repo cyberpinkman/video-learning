@@ -10,9 +10,9 @@ This document defines the required output shape for analysis reports. It is safe
 - Never commit generated reports, downloaded videos, audio, subtitles, keyframes, SQLite databases, browser profiles, cookies, tokens, proxy addresses, or account identifiers.
 - Reports may mention a public source URL, platform, title, author, and timestamps. They must not expose local secrets or authenticated request details.
 
-## Required report sections
+## Required deep-analyze-single report sections
 
-Every long-video report must include the sections below. The report may add domain-specific sections, but it must not omit these.
+Every deep-analyze-single report must include the sections below. The report may add domain-specific sections, but it must not omit these.
 
 1. Metadata
    - Platform.
@@ -90,6 +90,22 @@ Every long-video report must include the sections below. The report may add doma
 - Do not claim ASR output is accurate unless it has been reviewed. Use "transcript draft" when the transcript is machine-generated.
 - Mark confidence as `high`, `medium`, `low`, or `unknown`.
 
+## content-analyze-single report sections
+
+Content reports must use only transcript or sidecar subtitle evidence. They must not describe shot size, camera motion, composition, visual subtitles, props, scene, or shooting instructions.
+
+Required sections:
+
+1. Metadata and evidence status.
+2. Content hook with transcript timestamp evidence.
+3. Content structure with start/end timestamps per module.
+4. Core arguments and key expressions.
+5. Keywords and reusable content framework.
+6. Risks, including ASR review and unsupported claims.
+7. Transcript table for `full` and `transcript` formats.
+
+Every important content claim must map to a transcript segment or stored content analysis. If transcript evidence is missing, the report must say "证据不足" instead of inferring from the video file.
+
 ## Confidence labels
 
 - `high`: Directly supported by timestamps, visual descriptions, transcript, or measured metrics.
@@ -102,7 +118,7 @@ Every long-video report must include the sections below. The report may add doma
 Generate a full report:
 
 ```bash
-bun run src/cli.ts report <video_id> \
+bun run src/cli.ts deep-report-single <video_id> \
   --format full \
   --workspace .video-learning-data \
   --db .video-learning-data/video-learning.sqlite \
@@ -112,11 +128,21 @@ bun run src/cli.ts report <video_id> \
 Generate a shooting brief:
 
 ```bash
-bun run src/cli.ts report <video_id> \
+bun run src/cli.ts deep-report-single <video_id> \
   --format shooting_brief \
   --workspace .video-learning-data \
   --db .video-learning-data/video-learning.sqlite \
   --out reports/<video_id>-shooting-brief.md
+```
+
+Generate a content analysis report:
+
+```bash
+bun run src/cli.ts content-report-single <video_id> \
+  --format full \
+  --workspace .video-learning-data \
+  --db .video-learning-data/video-learning.sqlite \
+  --out reports/<video_id>-content-full.md
 ```
 
 Open-source repositories should commit this standard, not the generated reports.

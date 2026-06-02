@@ -6,6 +6,12 @@ export type AnalysisDepth = "standard" | "deep";
 
 export type ReportFormat = "full" | "shooting_brief" | "shot_list" | "edit_brief";
 
+export type ContentReportFormat = "full" | "brief" | "transcript";
+
+export type ContentAnalysisProvider = "openai" | "dashscope" | "local";
+
+export type ContentConfidence = "high" | "medium" | "low" | "unknown";
+
 export interface VideoRecord {
   id: string;
   platform: Platform;
@@ -68,6 +74,37 @@ export interface TranscriptSegmentRecord extends TranscriptSegmentInput {
   keywords: string[];
 }
 
+export interface ContentStructureItem {
+  startSec?: number;
+  endSec?: number;
+  summary: string;
+  evidence: string;
+}
+
+export interface ContentAnalysisContent {
+  topic: string;
+  audience: string;
+  hook: string;
+  structure: ContentStructureItem[];
+  arguments: string[];
+  quotes: string[];
+  keywords: string[];
+  reusableFramework: string;
+  risks: string[];
+  confidence: ContentConfidence;
+  evidenceNotes: string[];
+}
+
+export interface ContentAnalysisRecord {
+  id: string;
+  videoId: string;
+  provider: ContentAnalysisProvider;
+  model: string;
+  transcriptHash: string;
+  contentJson: ContentAnalysisContent;
+  createdAt: string;
+}
+
 export interface AcquisitionAttemptInput {
   platform: Platform;
   sourceUrl: string;
@@ -109,5 +146,17 @@ export interface ProcessingResult {
     metadata?: Record<string, unknown>;
   }>;
   shots: ShotInput[];
+  transcript: TranscriptSegmentInput[];
+}
+
+export interface TranscriptProcessingResult {
+  durationSec: number;
+  assets: Array<{
+    kind: AssetRecord["kind"];
+    path: string;
+    mimeType?: string | null;
+    contentHash?: string | null;
+    metadata?: Record<string, unknown>;
+  }>;
   transcript: TranscriptSegmentInput[];
 }

@@ -40,21 +40,36 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
     },
   }, async input => toolResult(await handlers.ingest_video_file(input)));
 
-  server.registerTool("analyze_video", {
-    description: "Run local video processing and optional cloud vision enrichment for a video id.",
+  server.registerTool("deep_analyze_single", {
+    description: "Run single-video deep analysis: local video processing, shot evidence, and optional cloud vision enrichment.",
     inputSchema: {
       video_id: z.string(),
       depth: z.enum(["standard", "deep"]).optional(),
     },
-  }, async input => toolResult(await handlers.analyze_video(input)));
+  }, async input => toolResult(await handlers.deep_analyze_single(input)));
 
-  server.registerTool("get_video_report", {
-    description: "Return a timestamped recreation-grade report, shooting brief, shot list, or edit brief.",
+  server.registerTool("get_deep_analyze_single_report", {
+    description: "Return a timestamped deep single-video report, shooting brief, shot list, or edit brief.",
     inputSchema: {
       video_id: z.string(),
       format: z.enum(["full", "shooting_brief", "shot_list", "edit_brief"]).optional(),
     },
-  }, async input => toolResult(await handlers.get_video_report(input)));
+  }, async input => toolResult(await handlers.get_deep_analyze_single_report(input)));
+
+  server.registerTool("content_analyze_single", {
+    description: "Analyze a single video only from speech transcript or subtitle evidence, without shot or vision analysis.",
+    inputSchema: {
+      video_id: z.string(),
+    },
+  }, async input => toolResult(await handlers.content_analyze_single(input)));
+
+  server.registerTool("get_content_analyze_single_report", {
+    description: "Return a single-video content analysis report, brief, or transcript-only report.",
+    inputSchema: {
+      video_id: z.string(),
+      format: z.enum(["full", "brief", "transcript"]).optional(),
+    },
+  }, async input => toolResult(await handlers.get_content_analyze_single_report(input)));
 
   server.registerTool("compare_videos", {
     description: "Compare a target video with reference videos for reusable structure and shooting patterns.",

@@ -211,6 +211,36 @@ def analyze(video_path, out_dir, max_shots):
     }
 
 
+def transcribe(video_path, out_dir):
+    duration = ffprobe_duration(video_path)
+    out = Path(out_dir)
+    audio_path = out / "audio.wav"
+    audio_ok = extract_audio(video_path, audio_path)
+    assets = []
+    if audio_ok:
+        assets.append({
+            "kind": "audio",
+            "path": str(audio_path),
+            "mimeType": "audio/wav",
+            "metadata": {"sampleRate": 16000},
+        })
+    sidecar_srt = Path(video_path).with_suffix(".srt")
+    sidecar_vtt = Path(video_path).with_suffix(".vtt")
+    if sidecar_srt.exists():
+        transcript = parse_srt(sidecar_srt)
+    elif sidecar_vtt.exists():
+        transcript = parse_vtt(sidecar_vtt)
+    elif audio_ok:
+        transcript = transcribe_audio(audio_path)
+    else:
+        transcript = []
+    return {
+        "durationSec": duration,
+        "assets": assets,
+        "transcript": transcript,
+    }
+
+
 def parse_timestamp(value):
     hours, minutes, rest = value.split(":")
     seconds, millis = rest.split(",")
@@ -396,9 +426,14 @@ def main(argv):
     analyze_parser.add_argument("video_path")
     analyze_parser.add_argument("--out-dir", required=True)
     analyze_parser.add_argument("--max-shots", type=int, default=120)
+    transcribe_parser = sub.add_parser("transcribe")
+    transcribe_parser.add_argument("video_path")
+    transcribe_parser.add_argument("--out-dir", required=True)
     args = parser.parse_args(argv)
     if args.command == "analyze":
         print(json.dumps(analyze(args.video_path, args.out_dir, args.max_shots), ensure_ascii=False))
+    elif args.command == "transcribe":
+        print(json.dumps(transcribe(args.video_path, args.out_dir), ensure_ascii=False))
 
 
 if __name__ == "__main__":

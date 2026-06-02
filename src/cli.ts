@@ -5,7 +5,7 @@ import { createStore, resolveRuntimeConfig } from "./config.ts";
 import { runMcpServer } from "./mcp.ts";
 import { createToolHandlers } from "./tools.ts";
 import { listAdapterStatuses } from "./adapters.ts";
-import type { Platform, ReportFormat } from "./types.ts";
+import type { ContentReportFormat, Platform, ReportFormat } from "./types.ts";
 
 interface ParsedArgs {
   command: string;
@@ -41,8 +41,10 @@ function usage(): string {
 Commands:
   acquire <url> [--platform youtube|douyin|wechat_channels|xiaohongshu|tiktok] [--strategy normal|strong]
   ingest <path> [--platform local] [--source-url <url>]
-  analyze <video_id> [--depth standard|deep] [--stub]
-  report <video_id> [--format full|shooting_brief|shot_list|edit_brief] [--out <path>]
+  deep-analyze-single <video_id> [--depth standard|deep] [--stub]
+  deep-report-single <video_id> [--format full|shooting_brief|shot_list|edit_brief] [--out <path>]
+  content-analyze-single <video_id>
+  content-report-single <video_id> [--format full|brief|transcript] [--out <path>]
   search <query> [--platform <platform>]
   adapters
   mcp
@@ -65,7 +67,7 @@ function printJson(value: unknown): void {
 }
 
 function ensureReadableDatabase(command: string, flags: Record<string, string | boolean>): void {
-  if (command !== "report") return;
+  if (command !== "deep-report-single" && command !== "content-report-single") return;
   const config = resolveRuntimeConfig(globalConfig(flags));
   if (!existsSync(config.dbPath)) {
     throw new Error(`Database not found: ${config.dbPath}. Refusing to create an empty database for report output.`);
@@ -113,21 +115,44 @@ async function main(): Promise<void> {
       }));
       break;
     }
-    case "analyze": {
+    case "deep-analyze-single": {
       const videoId = parsed.positionals[0];
-      if (!videoId) throw new Error("Usage: video-learning analyze <video_id>");
-      printJson(await tools.analyze_video({
+      if (!videoId) throw new Error("Usage: video-learning deep-analyze-single <video_id>");
+      printJson(await tools.deep_analyze_single({
         video_id: videoId,
         depth: parsed.flags.depth === "deep" ? "deep" : "standard",
       }));
       break;
     }
-    case "report": {
+    case "deep-report-single": {
       const videoId = parsed.positionals[0];
-      if (!videoId) throw new Error("Usage: video-learning report <video_id>");
-      const result = await tools.get_video_report({
+      if (!videoId) throw new Error("Usage: video-learning deep-report-single <video_id>");
+      const result = await tools.get_deep_analyze_single_report({
         video_id: videoId,
         format: (parsed.flags.format as ReportFormat | undefined) ?? "full",
+      });
+      if (typeof parsed.flags.out === "string") {
+        const outPath = resolve(parsed.flags.out);
+        mkdirSync(dirname(outPath), { recursive: true });
+        writeFileSync(outPath, result.report);
+        printJson({ video_id: videoId, format: result.format, path: outPath });
+        break;
+      }
+      console.log(result.report);
+      break;
+    }
+    case "content-analyze-single": {
+      const videoId = parsed.positionals[0];
+      if (!videoId) throw new Error("Usage: video-learning content-analyze-single <video_id>");
+      printJson(await tools.content_analyze_single({ video_id: videoId }));
+      break;
+    }
+    case "content-report-single": {
+      const videoId = parsed.positionals[0];
+      if (!videoId) throw new Error("Usage: video-learning content-report-single <video_id>");
+      const result = await tools.get_content_analyze_single_report({
+        video_id: videoId,
+        format: (parsed.flags.format as ContentReportFormat | undefined) ?? "full",
       });
       if (typeof parsed.flags.out === "string") {
         const outPath = resolve(parsed.flags.out);

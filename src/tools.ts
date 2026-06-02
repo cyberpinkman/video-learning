@@ -2,8 +2,10 @@ import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import type { VideoLearningStore } from "./storage.ts";
 import { maybeEnrichShotsWithCloud } from "./cloud.ts";
+import { analyzeContentFromTranscript } from "./content.ts";
+import { generateContentReport } from "./content-report.ts";
 import { generateRecreationReport } from "./report.ts";
-import type { AnalysisDepth, Platform, ProcessingResult, ReportFormat } from "./types.ts";
+import type { AnalysisDepth, ContentReportFormat, Platform, ProcessingResult, ReportFormat, TranscriptProcessingResult } from "./types.ts";
 
 export interface ToolContext {
   store: VideoLearningStore;
@@ -14,8 +16,10 @@ export interface ToolContext {
 export interface ToolHandlers {
   acquire_video(input: { url: string; platform?: Platform; strategy?: string }): Promise<{ video_id: string | null; status: string; attempts: unknown[] }>;
   ingest_video_file(input: { path: string; platform?: Platform; source_url?: string | null }): Promise<{ video_id: string; created: boolean; content_hash: string }>;
-  analyze_video(input: { video_id: string; depth?: AnalysisDepth }): Promise<{ video_id: string; status: string; report_id: string }>;
-  get_video_report(input: { video_id: string; format?: ReportFormat }): Promise<{ video_id: string; format: ReportFormat; report: string }>;
+  deep_analyze_single(input: { video_id: string; depth?: AnalysisDepth }): Promise<{ video_id: string; status: string; report_id: string }>;
+  get_deep_analyze_single_report(input: { video_id: string; format?: ReportFormat }): Promise<{ video_id: string; format: ReportFormat; report: string }>;
+  content_analyze_single(input: { video_id: string }): Promise<{ video_id: string; status: string; analysis_id: string; report_id: string }>;
+  get_content_analyze_single_report(input: { video_id: string; format?: ContentReportFormat }): Promise<{ video_id: string; format: ContentReportFormat; report: string }>;
   compare_videos(input: { target_id: string; reference_ids: string[] }): Promise<{ report: string }>;
   search_video_memory(input: { query: string; filters?: { platform?: Platform } }): Promise<{ results: Array<{ video_id: string; title: string; platform: Platform; status: string }> }>;
   make_recreation_plan(input: { video_id: string; constraints?: Record<string, unknown> }): Promise<{ video_id: string; plan: string; plan_id: string }>;
@@ -92,8 +96,46 @@ async function processWithWorker(videoId: string, videoPath: string, workspaceDi
   return JSON.parse(stdout) as ProcessingResult;
 }
 
+async function transcribeWithWorker(videoId: string, videoPath: string, workspaceDir: string): Promise<TranscriptProcessingResult> {
+  const proc = Bun.spawn({
+    cmd: [resolveWorkerPython(), join(import.meta.dir, "..", "scripts", "video_worker.py"), "transcribe", videoPath, "--out-dir", join(workspaceDir, "artifacts", videoId, "content")],
+    env: {
+      ...process.env,
+      VIDEO_LEARNING_STT_ENGINE: process.env.VIDEO_LEARNING_STT_ENGINE ?? "faster-whisper",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`video worker transcribe failed: ${stderr || stdout}`);
+  }
+  return JSON.parse(stdout) as TranscriptProcessingResult;
+}
+
 function originalVideoPath(store: VideoLearningStore, videoId: string): string | null {
   return store.listAssets(videoId).find(asset => asset.kind === "original_video" || asset.kind === "screen_recording")?.path ?? null;
+}
+
+function existingTranscriptProcessing(store: VideoLearningStore, videoId: string, durationSec: number | null): TranscriptProcessingResult | null {
+  const transcript = store.listTranscript(videoId);
+  if (transcript.length === 0) return null;
+  return {
+    durationSec: durationSec ?? Math.max(...transcript.map(segment => segment.endSec), 0),
+    assets: [],
+    transcript: transcript.map(segment => ({
+      startSec: segment.startSec,
+      endSec: segment.endSec,
+      speaker: segment.speaker,
+      text: segment.text,
+      wordsPerMinute: segment.wordsPerMinute,
+      keywords: segment.keywords,
+    })),
+  };
 }
 
 export function createToolHandlers(ctx: ToolContext): ToolHandlers {
@@ -122,7 +164,7 @@ export function createToolHandlers(ctx: ToolContext): ToolHandlers {
       return { video_id: result.videoId, created: result.created, content_hash: result.contentHash };
     },
 
-    async analyze_video(input) {
+    async deep_analyze_single(input) {
       const video = store.getVideo(input.video_id);
       if (!video) throw new Error(`Video not found: ${input.video_id}`);
       const videoPath = originalVideoPath(store, input.video_id);
@@ -148,10 +190,63 @@ export function createToolHandlers(ctx: ToolContext): ToolHandlers {
       return { video_id: input.video_id, status: "analyzed", report_id: reportId };
     },
 
-    async get_video_report(input) {
+    async get_deep_analyze_single_report(input) {
       const format = input.format ?? "full";
       const report = generateRecreationReport(store, input.video_id, format);
       store.saveAnalysisReport(input.video_id, format, report);
+      return { video_id: input.video_id, format, report };
+    },
+
+    async content_analyze_single(input) {
+      const video = store.getVideo(input.video_id);
+      if (!video) throw new Error(`Video not found: ${input.video_id}`);
+      const videoPath = originalVideoPath(store, input.video_id);
+      const processing = ctx.allowStubProcessing
+        ? {
+            durationSec: video.durationSec ?? 0,
+            assets: [],
+            transcript: [{
+              startSec: 0,
+              endSec: Math.min(video.durationSec ?? 3, 3),
+              speaker: "S1",
+              text: "内容分析需要可转写音频或字幕证据",
+              wordsPerMinute: 0,
+              keywords: ["内容分析"],
+            }],
+          } satisfies TranscriptProcessingResult
+        : videoPath
+          ? await transcribeWithWorker(input.video_id, videoPath, ctx.workspaceDir)
+          : existingTranscriptProcessing(store, input.video_id, video.durationSec);
+      if (!processing) throw new Error("缺少原视频资产或可复用转写证据，无法进行 content-analyze-single。");
+
+      for (const asset of processing.assets) {
+        store.addAsset(input.video_id, {
+          kind: asset.kind,
+          path: asset.path,
+          mimeType: asset.mimeType ?? null,
+          contentHash: asset.contentHash ?? null,
+          metadata: asset.metadata ?? {},
+        });
+      }
+      store.replaceTranscript(input.video_id, processing.transcript);
+      store.updateVideo(input.video_id, { durationSec: processing.durationSec, status: "analyzed" });
+      const transcript = store.listTranscript(input.video_id);
+      const content = await analyzeContentFromTranscript(transcript);
+      const analysisId = store.saveContentAnalysis(input.video_id, {
+        provider: content.provider,
+        model: content.model,
+        transcriptHash: content.transcriptHash,
+        contentJson: content.content,
+      });
+      const report = generateContentReport(store, input.video_id, "full");
+      const reportId = store.saveAnalysisReport(input.video_id, "content_full", report);
+      return { video_id: input.video_id, status: "content_analyzed", analysis_id: analysisId, report_id: reportId };
+    },
+
+    async get_content_analyze_single_report(input) {
+      const format = input.format ?? "full";
+      const report = generateContentReport(store, input.video_id, format);
+      store.saveAnalysisReport(input.video_id, `content_${format}`, report);
       return { video_id: input.video_id, format, report };
     },
 
