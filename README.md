@@ -23,6 +23,10 @@ bun run src/cli.ts deep-report-single <video_id> --format full
 bun run src/cli.ts content-analyze-single <video_id>
 bun run src/cli.ts content-report-single <video_id> --format full
 
+# 账号作品发现：枚举抖音账号主页作品清单，并默认逐条采集本地视频资产；不转写、不分析
+bun run src/cli.ts content-discover-account <account_url> --platform douyin --out reports/<account>-discovery.json
+bun run src/cli.ts content-discover-account-result <discovery_id> --out reports/<account>-discovery.json
+
 # 账号级内容分析：传入同一作者的多条本地视频 id，自动补跑缺失的 single 内容分析；任一视频缺少转写证据会失败
 bun run src/cli.ts content-analyze-account <video_id_1> <video_id_2>
 bun run src/cli.ts content-report-account <account_analysis_id> --format full
@@ -34,6 +38,7 @@ bun run src/cli.ts deep-analyze-single <video_id> --workspace "$VL_HOME" --db "$
 bun run src/cli.ts deep-report-single <video_id> --format full --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite" --out "$PROJECT_HOME/reports/<video_id>-deep-full.md"
 bun run src/cli.ts content-analyze-single <video_id> --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite"
 bun run src/cli.ts content-report-single <video_id> --format full --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite" --out "$PROJECT_HOME/reports/<video_id>-content-full.md"
+bun run src/cli.ts content-discover-account <account_url> --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite" --out "$PROJECT_HOME/reports/<account>-discovery.json"
 bun run src/cli.ts content-analyze-account <video_id_1> <video_id_2> --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite"
 bun run src/cli.ts content-report-account <account_analysis_id> --format full --workspace "$VL_HOME" --db "$VL_HOME/video-learning.sqlite" --out "$PROJECT_HOME/reports/<account_analysis_id>-account-full.md"
 
@@ -49,6 +54,7 @@ bun run src/cli.ts mcp
 - 可复查产物必须放在稳定路径：数据库/下载/关键帧放 `.video-learning-data/` 或 `~/.video-learning/`，Markdown 报告放 `reports/`。
 - `deep-report-single --out <path>`、`content-report-single --out <path>` 和 `content-report-account --out <path>` 会把可读 Markdown 写到指定文件。
 - 报告命令不会再为不存在的 `--db` 路径静默创建空库；缺失数据库会直接失败。
+- 报告命令默认不会把超长 Markdown 直接输出到 stdout；超过 `VIDEO_LEARNING_CLI_MAX_STDOUT_BYTES` 时必须使用 `--out <path>`，避免 Codex/终端读取大量 transcript/report。
 
 ## Tools
 
@@ -60,6 +66,8 @@ MCP 工具：
 - `get_deep_analyze_single_report(video_id, format?)`
 - `content_analyze_single(video_id)`
 - `get_content_analyze_single_report(video_id, format?)`
+- `content_discover_account(account_url, platform?, acquire_assets?)`
+- `get_content_discover_account_result(discovery_id, include_items?)`
 - `content_analyze_account(video_ids[])`
 - `get_content_analyze_account_report(account_analysis_id, format?)`
 - `compare_videos(target_id, reference_ids[])`
@@ -96,6 +104,43 @@ bun run src/cli.ts adapters
 
 ```bash
 export VIDEO_LEARNING_BROWSER_PROFILE_DIR="$HOME/.video-learning/browser-profile"
+```
+
+账号作品发现：
+
+```bash
+.venv/bin/python scripts/adapters/douyin_account_discover.py "https://v.douyin.com/..."
+```
+
+`content-discover-account` 第一版只支持抖音账号主页。它先读取账号页、作品数和作品列表；发现全量成功后，默认逐条调用采集层把作品下载/导入为本地 `videos` 和 `original_video` assets，返回 `video_ids`、`acquired_count` 和 `asset_failed_count`。这个阶段不运行 STT，也不调用 GLM/MiniMax/OpenAI。发现器只计入抖音作品接口返回的真实作品，不把账号页 SEO/推荐链接当成作品。首页作品数可读时采用严格全量策略：例如页面显示 60 条但只能枚举到 21 条，会保存 `partial` discovery 并让命令失败；错误信息会包含 `discovery_id`，可用 `content-discover-account-result <discovery_id> --out <path>` 取回已发现的部分清单。只想导出作品清单、不下载素材时，加 `--no-acquire`。
+
+抖音账号作品分页接口需要有效登录态。默认 headless 模式如果没有 `sid_guard/sessionid` 等登录 cookie，会保存 `failed` discovery，诊断里标记 `authRequired: true`，不会把空结果或 SEO 链接误报为部分样本。首次使用可用可见浏览器扫码登录，登录态会保存在独立 profile 中：
+
+```bash
+bun --env-file=.env.local run src/cli.ts content-discover-account "https://v.douyin.com/..." \
+  --login \
+  --profile "$HOME/.video-learning/browser-profiles/douyin" \
+  --out reports/account-discovery.json
+```
+
+扫码登录成功后，后续命令复用同一个 `--profile` 即可 headless 枚举全量作品：
+
+```bash
+bun --env-file=.env.local run src/cli.ts content-discover-account "https://v.douyin.com/..." \
+  --profile "$HOME/.video-learning/browser-profiles/douyin" \
+  --out reports/account-discovery.json
+```
+
+如内置 Playwright 发现器无法拿到全量，可配置专用账号作品 wrapper：
+
+```bash
+export VIDEO_LEARNING_DOUYIN_ACCOUNT_DISCOVER_CMD="/absolute/path/to/douyin_account_wrapper"
+```
+
+该 wrapper 最后一个参数会收到账号 URL，最后一行 stdout 必须是 JSON，例如：
+
+```json
+{"platform":"douyin","accountUrl":"https://www.douyin.com/user/...","accountId":"sec_user_id","author":"作者","expectedCount":60,"items":[{"platformVideoId":"123","url":"https://www.douyin.com/video/123","type":"video","description":"标题","author":"作者","durationSec":60}]}
 ```
 
 复杂平台仍需要你提供可输出 JSON 的 wrapper 命令，因为这些项目的登录态、Cookie、代理和下载路径因账号环境而异。wrapper 最后一个参数会收到 URL，最后一行 stdout 必须是 JSON，例如：
@@ -219,13 +264,27 @@ export VIDEO_LEARNING_VISION_MODEL=gpt-4.1-mini
 内容分析文本模型：
 
 ```bash
-# 可选。未设置时会复用视觉 provider/model 和对应 API key；无 key 时使用本地低置信度整理
+# 可选。未设置时会优先使用 GLM/MiniMax key，然后复用视觉 provider/model 和对应 API key；无 key 时使用本地低置信度整理
 export VIDEO_LEARNING_TEXT_PROVIDER=openai
 export VIDEO_LEARNING_TEXT_MODEL=gpt-4.1-mini
 
 # 或使用 DashScope
 export VIDEO_LEARNING_TEXT_PROVIDER=dashscope
 export VIDEO_LEARNING_TEXT_MODEL=qwen3.6-plus
+
+# GLM primary + MiniMax fallback；这条路径不会调用 OpenAI API
+export VIDEO_LEARNING_TEXT_PROVIDER=glm
+export VIDEO_LEARNING_TEXT_FALLBACK_PROVIDER=minimax
+export GLM_API_KEY=your-glm-or-zai-key
+export GLM_BASE_URL=https://api.z.ai/api/paas/v4
+export VIDEO_LEARNING_GLM_MODEL=glm-5.1
+export MINIMAX_API_KEY=your-minimax-key
+export MINIMAX_BASE_URL=https://api.minimax.io/v1
+export VIDEO_LEARNING_MINIMAX_MODEL=MiniMax-M2.7-highspeed
+
+# MiniMax 中国区 token-plan 可改用：
+export MINIMAX_CN_API_KEY=your-minimax-cn-key
+export MINIMAX_BASE_URL=https://api.minimaxi.com/v1
 
 # 完全关闭文本模型增强
 export VIDEO_LEARNING_TEXT_PROVIDER=off
@@ -242,6 +301,9 @@ export VIDEO_LEARNING_CLOUD_BATCH_SIZE=8
 
 # 默认单个云视觉请求 120 秒超时，失败批次会跳过并记录 stderr
 export VIDEO_LEARNING_CLOUD_REQUEST_TIMEOUT_MS=120000
+
+# 报告命令无 --out 时的 stdout 安全上限；超限会失败并提示使用 --out
+export VIDEO_LEARNING_CLI_MAX_STDOUT_BYTES=12000
 ```
 
 ## Output Standard

@@ -1,18 +1,21 @@
 import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import type { VideoLearningStore } from "./storage.ts";
+import { discoverAccountVideos } from "./account-discovery.ts";
+import { acquireVideo, type CommandRunner } from "./acquisition.ts";
 import { analyzeAccountContent } from "./account-content.ts";
 import { generateAccountContentReport } from "./account-content-report.ts";
 import { maybeEnrichShotsWithCloud } from "./cloud.ts";
 import { analyzeContentFromTranscript } from "./content.ts";
 import { generateContentReport } from "./content-report.ts";
 import { generateRecreationReport } from "./report.ts";
-import type { AccountContentReportFormat, AnalysisDepth, ContentReportFormat, Platform, ProcessingResult, ReportFormat, TranscriptProcessingResult, VideoRecord } from "./types.ts";
+import type { AccountContentReportFormat, AccountDiscoveredItem, AccountDiscoveryRecord, AnalysisDepth, ContentReportFormat, Platform, ProcessingResult, ReportFormat, TranscriptProcessingResult, VideoRecord } from "./types.ts";
 
 export interface ToolContext {
   store: VideoLearningStore;
   workspaceDir: string;
   allowStubProcessing?: boolean;
+  commandRunner?: CommandRunner;
 }
 
 export interface ToolHandlers {
@@ -22,6 +25,8 @@ export interface ToolHandlers {
   get_deep_analyze_single_report(input: { video_id: string; format?: ReportFormat }): Promise<{ video_id: string; format: ReportFormat; report: string }>;
   content_analyze_single(input: { video_id: string }): Promise<{ video_id: string; status: string; analysis_id: string; report_id: string }>;
   get_content_analyze_single_report(input: { video_id: string; format?: ContentReportFormat }): Promise<{ video_id: string; format: ContentReportFormat; report: string }>;
+  content_discover_account(input: { account_url: string; platform?: Platform; acquire_assets?: boolean }): Promise<{ discovery_id: string; status: string; author: string | null; expected_count: number | null; discovered_count: number; sample_items: unknown[]; asset_status?: string; acquired_count?: number; asset_failed_count?: number; video_ids?: string[] }>;
+  get_content_discover_account_result(input: { discovery_id: string; include_items?: boolean }): Promise<Record<string, unknown>>;
   content_analyze_account(input: { video_ids: string[] }): Promise<{ account_analysis_id: string; status: string; author: string; video_ids: string[]; single_analysis_ids: string[] }>;
   get_content_analyze_account_report(input: { account_analysis_id: string; format?: AccountContentReportFormat }): Promise<{ account_analysis_id: string; format: AccountContentReportFormat; report: string }>;
   compare_videos(input: { target_id: string; reference_ids: string[] }): Promise<{ report: string }>;
@@ -158,18 +163,152 @@ function transcriptEvidence(store: VideoLearningStore, videoId: string) {
   return store.listTranscript(videoId).filter(segment => segment.text.trim().length > 0);
 }
 
+function discoveryInlineLimit(): number {
+  const parsed = Number(process.env.VIDEO_LEARNING_ACCOUNT_DISCOVER_INLINE_LIMIT ?? "5");
+  if (!Number.isFinite(parsed) || parsed < 0) return 5;
+  return Math.floor(parsed);
+}
+
+function discoverySummary(record: AccountDiscoveryRecord | null, includeItems = false): Record<string, unknown> {
+  if (!record) throw new Error("Account discovery not found.");
+  const acquisition = record.diagnostics.assetAcquisition && typeof record.diagnostics.assetAcquisition === "object" && !Array.isArray(record.diagnostics.assetAcquisition)
+    ? record.diagnostics.assetAcquisition as Record<string, unknown>
+    : null;
+  const summary: Record<string, unknown> = {
+    discovery_id: record.id,
+    platform: record.platform,
+    account_url: record.accountUrl,
+    account_id: record.accountId,
+    status: record.status,
+    author: record.author,
+    expected_count: record.expectedCount,
+    discovered_count: record.discoveredCount,
+    sample_items: record.items.slice(0, discoveryInlineLimit()),
+    created_at: record.createdAt,
+  };
+  if (acquisition) {
+    summary.asset_status = acquisition.status;
+    summary.acquired_count = acquisition.acquiredCount;
+    summary.asset_failed_count = acquisition.failedCount;
+    summary.video_ids = acquisition.videoIds;
+  }
+  if (includeItems) {
+    summary.items = record.items;
+    summary.diagnostics = record.diagnostics;
+  }
+  return summary;
+}
+
+function sourceMatchesItem(video: VideoRecord, item: AccountDiscoveredItem): boolean {
+  if (!video.sourceUrl) return false;
+  if (video.sourceUrl === item.url) return true;
+  return item.platformVideoId.length > 0 && video.sourceUrl.includes(item.platformVideoId);
+}
+
+function existingAcquiredVideo(store: VideoLearningStore, item: AccountDiscoveredItem): VideoRecord | null {
+  return store.listVideos().find(video => sourceMatchesItem(video, item)) ?? null;
+}
+
+function metadataPatchForItem(item: AccountDiscoveredItem, fallbackAuthor: string | null): Partial<Pick<VideoRecord, "title" | "author" | "publishedAt" | "durationSec">> {
+  const patch: Partial<Pick<VideoRecord, "title" | "author" | "publishedAt" | "durationSec">> = {};
+  if (item.description.trim()) patch.title = item.description.trim();
+  const author = item.author?.trim() || fallbackAuthor?.trim();
+  if (author) patch.author = author;
+  if (item.publishedAt) patch.publishedAt = item.publishedAt;
+  if (item.durationSec !== null) patch.durationSec = item.durationSec;
+  return patch;
+}
+
+function shortMessage(value: unknown): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+async function acquireDiscoveredAssets(input: {
+  store: VideoLearningStore;
+  workspaceDir: string;
+  commandRunner?: CommandRunner;
+  platform: Platform;
+  author: string | null;
+  items: AccountDiscoveredItem[];
+}): Promise<{ items: AccountDiscoveredItem[]; summary: Record<string, unknown> }> {
+  const acquiredItems: AccountDiscoveredItem[] = [];
+  const failures: Array<{ platformVideoId: string; url: string; message: string }> = [];
+  const videoIds: string[] = [];
+
+  for (const item of input.items) {
+    const existing = existingAcquiredVideo(input.store, item);
+    if (existing) {
+      input.store.updateVideo(existing.id, metadataPatchForItem(item, input.author));
+      videoIds.push(existing.id);
+      acquiredItems.push({
+        ...item,
+        acquiredVideoId: existing.id,
+        acquireStatus: "success",
+        acquireMessage: "existing",
+      });
+      continue;
+    }
+
+    const acquired = await acquireVideo({
+      url: item.url,
+      platform: input.platform,
+      workspaceDir: input.workspaceDir,
+      store: input.store,
+      commandRunner: input.commandRunner,
+    });
+    if (acquired.status === "success" && acquired.video_id) {
+      input.store.updateVideo(acquired.video_id, metadataPatchForItem(item, input.author));
+      videoIds.push(acquired.video_id);
+      acquiredItems.push({
+        ...item,
+        acquiredVideoId: acquired.video_id,
+        acquireStatus: "success",
+        acquireMessage: null,
+      });
+    } else {
+      const message = shortMessage((acquired.attempts as Array<Record<string, unknown>>)
+        .filter(attempt => attempt.status === "failed")
+        .map(attempt => `${attempt.adapter}: ${attempt.message ?? ""}`)
+        .join("; ") || "asset acquisition failed");
+      failures.push({ platformVideoId: item.platformVideoId, url: item.url, message });
+      acquiredItems.push({
+        ...item,
+        acquiredVideoId: null,
+        acquireStatus: "failed",
+        acquireMessage: message,
+      });
+    }
+  }
+
+  const acquiredCount = videoIds.length;
+  const failedCount = failures.length;
+  const status = failedCount === 0 ? "success" : acquiredCount > 0 ? "partial" : "failed";
+  return {
+    items: acquiredItems,
+    summary: {
+      enabled: true,
+      status,
+      requestedCount: input.items.length,
+      acquiredCount,
+      failedCount,
+      videoIds,
+      failures,
+    },
+  };
+}
+
 export function createToolHandlers(ctx: ToolContext): ToolHandlers {
   const { store } = ctx;
 
   return {
     async acquire_video(input) {
-      const { acquireVideo } = await import("./acquisition.ts");
       const result = await acquireVideo({
         url: input.url,
         platform: input.platform,
         strategy: input.strategy,
         workspaceDir: ctx.workspaceDir,
         store,
+        commandRunner: ctx.commandRunner,
       });
       return result;
     },
@@ -268,6 +407,69 @@ export function createToolHandlers(ctx: ToolContext): ToolHandlers {
       const report = generateContentReport(store, input.video_id, format);
       store.saveAnalysisReport(input.video_id, `content_${format}`, report);
       return { video_id: input.video_id, format, report };
+    },
+
+    async content_discover_account(input) {
+      const discovery = await discoverAccountVideos({
+        accountUrl: input.account_url,
+        platform: input.platform,
+        workspaceDir: ctx.workspaceDir,
+        commandRunner: ctx.commandRunner,
+      });
+      let items = discovery.items;
+      let diagnostics: Record<string, unknown> = discovery.diagnostics;
+      if (discovery.status === "success") {
+        if (input.acquire_assets === false) {
+          diagnostics = {
+            ...diagnostics,
+            assetAcquisition: {
+              enabled: false,
+              status: "skipped",
+              requestedCount: discovery.items.length,
+              acquiredCount: 0,
+              failedCount: 0,
+              videoIds: [],
+              failures: [],
+            },
+          };
+        } else {
+          const acquired = await acquireDiscoveredAssets({
+            store,
+            workspaceDir: ctx.workspaceDir,
+            commandRunner: ctx.commandRunner,
+            platform: discovery.platform,
+            author: discovery.author,
+            items: discovery.items,
+          });
+          items = acquired.items;
+          diagnostics = {
+            ...diagnostics,
+            assetAcquisition: acquired.summary,
+          };
+        }
+      }
+      const discoveryId = store.saveAccountDiscovery({
+        platform: discovery.platform,
+        accountUrl: discovery.accountUrl,
+        accountId: discovery.accountId,
+        author: discovery.author,
+        expectedCount: discovery.expectedCount,
+        items,
+        status: discovery.status,
+        diagnostics,
+      });
+      const record = store.getAccountDiscovery(discoveryId);
+      const summary = discoverySummary(record);
+      if (discovery.status !== "success") {
+        const authRequired = diagnostics.authRequired === true ? ", authRequired=true" : "";
+        const authMessage = typeof diagnostics.authMessage === "string" ? `, reason=${diagnostics.authMessage}` : "";
+        throw new Error(`content-discover-account ${discovery.status}: discovery_id=${discoveryId}, expected_count=${discovery.expectedCount ?? "unknown"}, discovered_count=${discovery.discoveredCount}${authRequired}${authMessage}`);
+      }
+      return summary as { discovery_id: string; status: string; author: string | null; expected_count: number | null; discovered_count: number; sample_items: unknown[]; asset_status?: string; acquired_count?: number; asset_failed_count?: number; video_ids?: string[] };
+    },
+
+    async get_content_discover_account_result(input) {
+      return discoverySummary(store.getAccountDiscovery(input.discovery_id), Boolean(input.include_items));
     },
 
     async content_analyze_account(input) {

@@ -14,8 +14,21 @@ const envKeys = [
   "OPENAI_BASE_URL",
   "DASHSCOPE_API_KEY",
   "DASHSCOPE_BASE_URL",
+  "GLM_API_KEY",
+  "GLM_BASE_URL",
+  "ZAI_API_KEY",
+  "ZAI_BASE_URL",
+  "BIGMODEL_API_KEY",
+  "BIGMODEL_BASE_URL",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CN_API_KEY",
+  "MINIMAX_BASE_URL",
   "VIDEO_LEARNING_TEXT_PROVIDER",
+  "VIDEO_LEARNING_TEXT_FALLBACK_PROVIDER",
   "VIDEO_LEARNING_TEXT_MODEL",
+  "VIDEO_LEARNING_TEXT_FALLBACK_MODEL",
+  "VIDEO_LEARNING_GLM_MODEL",
+  "VIDEO_LEARNING_MINIMAX_MODEL",
   "VIDEO_LEARNING_VISION_PROVIDER",
   "VIDEO_LEARNING_VISION_MODEL",
   "VIDEO_LEARNING_STT_ENGINE",
@@ -89,6 +102,92 @@ test("content analysis falls back to low-confidence local report without API key
   expect(result.model).toBe("fallback");
   expect(result.content.confidence).toBe("low");
   expect(result.content.evidenceNotes.join("\n")).toContain("模型增强不可用");
+});
+
+test("content analysis uses GLM first and falls back to MiniMax without calling OpenAI", async () => {
+  process.env.VIDEO_LEARNING_TEXT_PROVIDER = "glm";
+  process.env.VIDEO_LEARNING_TEXT_FALLBACK_PROVIDER = "minimax";
+  process.env.GLM_API_KEY = "glm-key";
+  process.env.MINIMAX_API_KEY = "minimax-key";
+  process.env.OPENAI_API_KEY = "openai-key-that-must-not-be-used";
+  const urls: string[] = [];
+  globalThis.fetch = (async (url, init) => {
+    urls.push(String(url));
+    if (String(url).includes("openai.com")) throw new Error("OpenAI should not be called");
+    if (String(url).includes("z.ai")) {
+      return new Response("glm unavailable", { status: 503 });
+    }
+    const body = JSON.parse(String(init?.body));
+    expect(body.model).toBe("MiniMax-M2.7-highspeed");
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            topic: "MiniMax 兜底主题",
+            audience: "创作者",
+            hook: "先讲痛点",
+            structure: [{ startSec: 0, endSec: 2, summary: "痛点开场", evidence: "[00:00.000-00:02.000]" }],
+            arguments: ["给出解决路径"],
+            quotes: ["先讲痛点"],
+            keywords: ["痛点"],
+            reusableFramework: "痛点-路径",
+            risks: ["转写需复核"],
+            confidence: "medium",
+            evidenceNotes: ["MiniMax fallback [00:00.000-00:02.000]"],
+          }),
+        },
+      }],
+    }), { status: 200 });
+  }) as typeof fetch;
+
+  const result = await analyzeContentFromTranscript([
+    { id: "trn_1", videoId: "vid_1", segmentIndex: 0, startSec: 0, endSec: 2, speaker: "S1", text: "先讲痛点，再讲路径", wordsPerMinute: 180, keywords: ["痛点"] },
+  ]);
+
+  expect(result.provider).toBe("minimax");
+  expect(result.model).toBe("MiniMax-M2.7-highspeed");
+  expect(urls.some(url => url.includes("z.ai"))).toBe(true);
+  expect(urls.some(url => url.includes("api.minimax.io/v1/chat/completions"))).toBe(true);
+  expect(urls.some(url => url.includes("openai.com"))).toBe(false);
+});
+
+test("content analysis prefers configured GLM keys over OpenAI vision defaults", async () => {
+  process.env.VIDEO_LEARNING_VISION_PROVIDER = "openai";
+  process.env.OPENAI_API_KEY = "openai-key-that-must-not-be-used";
+  process.env.GLM_API_KEY = "glm-key";
+  const urls: string[] = [];
+  globalThis.fetch = (async (url, _init) => {
+    urls.push(String(url));
+    if (String(url).includes("openai.com")) throw new Error("OpenAI should not be called");
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            topic: "GLM 主题",
+            audience: "创作者",
+            hook: "先讲痛点",
+            structure: [{ startSec: 0, endSec: 2, summary: "痛点开场", evidence: "[00:00.000-00:02.000]" }],
+            arguments: ["给出解决路径"],
+            quotes: ["先讲痛点"],
+            keywords: ["痛点"],
+            reusableFramework: "痛点-路径",
+            risks: ["转写需复核"],
+            confidence: "medium",
+            evidenceNotes: ["GLM [00:00.000-00:02.000]"],
+          }),
+        },
+      }],
+    }), { status: 200 });
+  }) as typeof fetch;
+
+  const result = await analyzeContentFromTranscript([
+    { id: "trn_1", videoId: "vid_1", segmentIndex: 0, startSec: 0, endSec: 2, speaker: "S1", text: "先讲痛点，再讲路径", wordsPerMinute: 180, keywords: ["痛点"] },
+  ]);
+
+  expect(result.provider).toBe("glm");
+  expect(result.model).toBe("glm-5.1");
+  expect(urls.some(url => url.includes("z.ai"))).toBe(true);
+  expect(urls.some(url => url.includes("openai.com"))).toBe(false);
 });
 
 test("text model content analysis drops unsupported model structure and keeps transcript evidence", async () => {
