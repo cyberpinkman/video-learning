@@ -10,9 +10,15 @@ export type ContentReportFormat = "full" | "brief" | "transcript";
 
 export type AccountContentReportFormat = "full" | "brief";
 
-export type ContentAnalysisProvider = "openai" | "dashscope" | "local";
+export type ContentAnalysisProvider = "openai" | "dashscope" | "glm" | "minimax" | "local";
 
 export type ContentConfidence = "high" | "medium" | "low" | "unknown";
+
+export type AccountDiscoveryStatus = "success" | "partial" | "failed";
+
+export type AccountDiscoveredItemType = "video" | "note" | "unknown";
+
+export type AccountAssetAcquireStatus = "success" | "failed" | "skipped";
 
 export interface VideoRecord {
   id: string;
@@ -145,6 +151,33 @@ export interface AccountContentAnalysisRecord {
   provider: ContentAnalysisProvider;
   model: string;
   contentJson: AccountContentAnalysisContent;
+  createdAt: string;
+}
+
+export interface AccountDiscoveredItem {
+  platformVideoId: string;
+  url: string;
+  type: AccountDiscoveredItemType;
+  description: string;
+  author: string | null;
+  publishedAt: string | null;
+  durationSec: number | null;
+  acquiredVideoId?: string | null;
+  acquireStatus?: AccountAssetAcquireStatus;
+  acquireMessage?: string | null;
+}
+
+export interface AccountDiscoveryRecord {
+  id: string;
+  platform: Platform;
+  accountUrl: string;
+  accountId: string | null;
+  author: string | null;
+  expectedCount: number | null;
+  discoveredCount: number;
+  status: AccountDiscoveryStatus;
+  items: AccountDiscoveredItem[];
+  diagnostics: Record<string, unknown>;
   createdAt: string;
 }
 

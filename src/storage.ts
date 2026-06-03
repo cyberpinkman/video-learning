@@ -9,6 +9,9 @@ import type {
   AcquisitionAttemptRecord,
   AccountContentAnalysisContent,
   AccountContentAnalysisRecord,
+  AccountDiscoveredItem,
+  AccountDiscoveryRecord,
+  AccountDiscoveryStatus,
   AssetRecord,
   ContentAnalysisContent,
   ContentAnalysisProvider,
@@ -168,6 +171,20 @@ export class VideoLearningStore {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS account_video_discoveries (
+        id TEXT PRIMARY KEY,
+        platform TEXT NOT NULL,
+        account_url TEXT NOT NULL,
+        account_id TEXT,
+        author TEXT,
+        expected_count INTEGER,
+        discovered_count INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        items_json TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS recreation_plans (
         id TEXT PRIMARY KEY,
         video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -181,6 +198,7 @@ export class VideoLearningStore {
       CREATE INDEX IF NOT EXISTS idx_transcript_video ON transcript_segments(video_id, segment_index);
       CREATE INDEX IF NOT EXISTS idx_content_analyses_video ON content_analyses(video_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_account_content_analyses_author ON account_content_analyses(author, created_at);
+      CREATE INDEX IF NOT EXISTS idx_account_video_discoveries_account ON account_video_discoveries(platform, account_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_attempts_created ON acquisition_attempts(created_at);
     `);
   }
@@ -355,6 +373,36 @@ export class VideoLearningStore {
     return analysisId;
   }
 
+  saveAccountDiscovery(input: {
+    platform: Platform;
+    accountUrl: string;
+    accountId?: string | null;
+    author?: string | null;
+    expectedCount?: number | null;
+    items: AccountDiscoveredItem[];
+    status: AccountDiscoveryStatus;
+    diagnostics?: Record<string, unknown>;
+  }): string {
+    const discoveryId = id("disc");
+    this.db.query(`
+      INSERT INTO account_video_discoveries (id, platform, account_url, account_id, author, expected_count, discovered_count, status, items_json, diagnostics_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      discoveryId,
+      input.platform,
+      redactSecrets(input.accountUrl),
+      input.accountId ?? null,
+      input.author ?? null,
+      input.expectedCount ?? null,
+      input.items.length,
+      input.status,
+      JSON.stringify(input.items),
+      JSON.stringify(input.diagnostics ?? {}),
+      nowIso(),
+    );
+    return discoveryId;
+  }
+
   saveRecreationPlan(videoId: string, constraints: Record<string, unknown>, content: string): string {
     const planId = id("plan");
     this.db.query("INSERT INTO recreation_plans (id, video_id, constraints_json, content, created_at) VALUES (?, ?, ?, ?, ?)")
@@ -423,6 +471,16 @@ export class VideoLearningStore {
   getAccountContentAnalysis(analysisId: string): AccountContentAnalysisRecord | null {
     const row = this.db.query("SELECT * FROM account_content_analyses WHERE id = ?").get(analysisId) as Record<string, unknown> | null;
     return row ? this.mapAccountContentAnalysis(row) : null;
+  }
+
+  getAccountDiscovery(discoveryId: string): AccountDiscoveryRecord | null {
+    const row = this.db.query("SELECT * FROM account_video_discoveries WHERE id = ?").get(discoveryId) as Record<string, unknown> | null;
+    return row ? this.mapAccountDiscovery(row) : null;
+  }
+
+  listAccountDiscoveries(): AccountDiscoveryRecord[] {
+    return this.db.query("SELECT * FROM account_video_discoveries ORDER BY created_at").all()
+      .map(row => this.mapAccountDiscovery(row as Record<string, unknown>));
   }
 
   listAcquisitionAttempts(): AcquisitionAttemptRecord[] {
@@ -536,6 +594,22 @@ export class VideoLearningStore {
         confidence: "unknown",
         evidenceNotes: [],
       }),
+      createdAt: String(row.created_at),
+    };
+  }
+
+  private mapAccountDiscovery(row: Record<string, unknown>): AccountDiscoveryRecord {
+    return {
+      id: String(row.id),
+      platform: row.platform as Platform,
+      accountUrl: String(row.account_url),
+      accountId: row.account_id ? String(row.account_id) : null,
+      author: row.author ? String(row.author) : null,
+      expectedCount: row.expected_count === null || row.expected_count === undefined ? null : Number(row.expected_count),
+      discoveredCount: Number(row.discovered_count),
+      status: row.status as AccountDiscoveryStatus,
+      items: jsonParse(String(row.items_json ?? "[]"), []),
+      diagnostics: jsonParse(String(row.diagnostics_json ?? "{}"), {}),
       createdAt: String(row.created_at),
     };
   }

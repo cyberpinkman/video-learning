@@ -14,8 +14,21 @@ const envKeys = [
   "OPENAI_BASE_URL",
   "DASHSCOPE_API_KEY",
   "DASHSCOPE_BASE_URL",
+  "GLM_API_KEY",
+  "GLM_BASE_URL",
+  "ZAI_API_KEY",
+  "ZAI_BASE_URL",
+  "BIGMODEL_API_KEY",
+  "BIGMODEL_BASE_URL",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CN_API_KEY",
+  "MINIMAX_BASE_URL",
   "VIDEO_LEARNING_TEXT_PROVIDER",
+  "VIDEO_LEARNING_TEXT_FALLBACK_PROVIDER",
   "VIDEO_LEARNING_TEXT_MODEL",
+  "VIDEO_LEARNING_TEXT_FALLBACK_MODEL",
+  "VIDEO_LEARNING_GLM_MODEL",
+  "VIDEO_LEARNING_MINIMAX_MODEL",
   "VIDEO_LEARNING_VISION_PROVIDER",
   "VIDEO_LEARNING_VISION_MODEL",
 ];
@@ -274,6 +287,59 @@ test("account model output without evidence falls back to local low-confidence s
   expect(result.content.positioning.claim).toContain("同一作者");
   expect(result.content.confidence).toBe("low");
   expect(result.content.evidenceNotes.join("\n")).toContain("账号模型输出缺少参与视频证据");
+});
+
+test("account content analysis uses GLM first and falls back to MiniMax without calling OpenAI", async () => {
+  process.env.VIDEO_LEARNING_TEXT_PROVIDER = "glm";
+  process.env.VIDEO_LEARNING_TEXT_FALLBACK_PROVIDER = "minimax";
+  process.env.GLM_API_KEY = "glm-key";
+  process.env.MINIMAX_API_KEY = "minimax-key";
+  process.env.OPENAI_API_KEY = "openai-key-that-must-not-be-used";
+  const urls: string[] = [];
+  globalThis.fetch = (async (url, init) => {
+    urls.push(String(url));
+    if (String(url).includes("openai.com")) throw new Error("OpenAI should not be called");
+    if (String(url).includes("z.ai")) return new Response("glm unavailable", { status: 503 });
+    const body = JSON.parse(String(init?.body));
+    expect(body.model).toBe("MiniMax-M2.7-highspeed");
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            positioning: { claim: "创作者教学账号", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] },
+            audience: { claim: "短视频新手", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] },
+            contentPillars: [{ name: "选题教学", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] }],
+            hookPatterns: [{ pattern: "痛点开场", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] }],
+            argumentPatterns: [{ pattern: "痛点-方法", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] }],
+            keywords: [{ claim: "选题", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] }],
+            representativeVideos: [{ videoId: "vid_a", reason: "选题代表", evidence: "vid_a [00:00.000-00:03.000]" }],
+            reusableTemplates: [{ claim: "痛点-方法", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] }],
+            opportunities: [{ claim: "扩展系列选题", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] }],
+            risks: [{ claim: "转写需复核", evidence: "vid_a [00:00.000-00:03.000]", videos: ["vid_a"] }],
+            confidence: "medium",
+            evidenceNotes: ["MiniMax fallback"],
+          }),
+        },
+      }],
+    }), { status: 200 });
+  }) as typeof fetch;
+
+  const result = await analyzeAccountContent({
+    author: "同一作者",
+    videos: [{
+      video: { id: "vid_a", title: "第一条", author: "同一作者", platform: "douyin", sourceUrl: null, publishedAt: null, durationSec: 12, contentHash: "a", status: "analyzed", createdAt: "", updatedAt: "" },
+      analysisId: "cnt_a",
+      content: saveableContent("第一条"),
+      transcriptSegments: [{ startSec: 0, endSec: 3, text: "第一条先讲选题痛点" }],
+    }],
+  });
+
+  expect(result.provider).toBe("minimax");
+  expect(result.model).toBe("MiniMax-M2.7-highspeed");
+  expect(result.content.positioning.claim).toBe("创作者教学账号");
+  expect(urls.some(url => url.includes("z.ai"))).toBe(true);
+  expect(urls.some(url => url.includes("api.minimax.io/v1/chat/completions"))).toBe(true);
+  expect(urls.some(url => url.includes("openai.com"))).toBe(false);
 });
 
 test("local account fallback summarizes pillars, keywords, and representative videos", async () => {

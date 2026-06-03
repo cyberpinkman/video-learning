@@ -45,6 +45,8 @@ Commands:
   deep-report-single <video_id> [--format full|shooting_brief|shot_list|edit_brief] [--out <path>]
   content-analyze-single <video_id>
   content-report-single <video_id> [--format full|brief|transcript] [--out <path>]
+  content-discover-account <account_url> [--platform douyin] [--out <path>] [--login] [--profile <path>] [--no-acquire]
+  content-discover-account-result <discovery_id> [--out <path>]
   content-analyze-account <video_id...>
   content-report-account <account_analysis_id> [--format full|brief] [--out <path>]
   search <query> [--platform <platform>]
@@ -68,8 +70,53 @@ function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
 
+function maxStdoutReportBytes(): number {
+  const parsed = Number(process.env.VIDEO_LEARNING_CLI_MAX_STDOUT_BYTES ?? process.env.VIDEO_LEARNING_CLI_MAX_STDOUT_CHARS ?? "12000");
+  if (!Number.isFinite(parsed) || parsed <= 0) return 12000;
+  return Math.floor(parsed);
+}
+
+function allowLargeStdout(): boolean {
+  return ["1", "true", "yes", "on"].includes((process.env.VIDEO_LEARNING_CLI_ALLOW_LARGE_STDOUT ?? "").trim().toLowerCase());
+}
+
+function writeOrPrintReport(input: {
+  report: string;
+  out: string | boolean | undefined;
+  json: Record<string, unknown>;
+}): void {
+  if (typeof input.out === "string") {
+    const outPath = resolve(input.out);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, input.report);
+    printJson({ ...input.json, path: outPath });
+    return;
+  }
+  const reportBytes = Buffer.byteLength(input.report, "utf8");
+  const maxBytes = maxStdoutReportBytes();
+  if (!allowLargeStdout() && reportBytes > maxBytes) {
+    throw new Error(`Report is ${reportBytes} bytes, above stdout safety limit ${maxBytes}. Use --out <path> to write the full report, or set VIDEO_LEARNING_CLI_ALLOW_LARGE_STDOUT=1.`);
+  }
+  console.log(input.report);
+}
+
+function writeJsonFile(input: {
+  value: unknown;
+  out: string | boolean | undefined;
+  summary: Record<string, unknown>;
+}): void {
+  if (typeof input.out !== "string") {
+    printJson(input.summary);
+    return;
+  }
+  const outPath = resolve(input.out);
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify(input.value, null, 2));
+  printJson({ ...input.summary, path: outPath });
+}
+
 function ensureReadableDatabase(command: string, flags: Record<string, string | boolean>): void {
-  if (command !== "deep-report-single" && command !== "content-report-single" && command !== "content-report-account") return;
+  if (command !== "deep-report-single" && command !== "content-report-single" && command !== "content-report-account" && command !== "content-discover-account-result") return;
   const config = resolveRuntimeConfig(globalConfig(flags));
   if (!existsSync(config.dbPath)) {
     throw new Error(`Database not found: ${config.dbPath}. Refusing to create an empty database for report output.`);
@@ -133,14 +180,11 @@ async function main(): Promise<void> {
         video_id: videoId,
         format: (parsed.flags.format as ReportFormat | undefined) ?? "full",
       });
-      if (typeof parsed.flags.out === "string") {
-        const outPath = resolve(parsed.flags.out);
-        mkdirSync(dirname(outPath), { recursive: true });
-        writeFileSync(outPath, result.report);
-        printJson({ video_id: videoId, format: result.format, path: outPath });
-        break;
-      }
-      console.log(result.report);
+      writeOrPrintReport({
+        report: result.report,
+        out: parsed.flags.out,
+        json: { video_id: videoId, format: result.format },
+      });
       break;
     }
     case "content-analyze-single": {
@@ -156,14 +200,41 @@ async function main(): Promise<void> {
         video_id: videoId,
         format: (parsed.flags.format as ContentReportFormat | undefined) ?? "full",
       });
-      if (typeof parsed.flags.out === "string") {
-        const outPath = resolve(parsed.flags.out);
-        mkdirSync(dirname(outPath), { recursive: true });
-        writeFileSync(outPath, result.report);
-        printJson({ video_id: videoId, format: result.format, path: outPath });
-        break;
+      writeOrPrintReport({
+        report: result.report,
+        out: parsed.flags.out,
+        json: { video_id: videoId, format: result.format },
+      });
+      break;
+    }
+    case "content-discover-account": {
+      const accountUrl = parsed.positionals[0];
+      if (!accountUrl) throw new Error("Usage: video-learning content-discover-account <account_url>");
+      if (parsed.flags.login === true) {
+        process.env.VIDEO_LEARNING_DOUYIN_ACCOUNT_DISCOVER_HEADLESS = "0";
       }
-      console.log(result.report);
+      if (typeof parsed.flags.profile === "string") {
+        process.env.VIDEO_LEARNING_DOUYIN_BROWSER_PROFILE_DIR = resolve(parsed.flags.profile);
+      }
+      const result = await tools.content_discover_account({
+        account_url: accountUrl,
+        platform: (parsed.flags.platform as Platform | undefined) ?? "douyin",
+        acquire_assets: parsed.flags.no_acquire !== true,
+      });
+      const full = typeof parsed.flags.out === "string"
+        ? await tools.get_content_discover_account_result({ discovery_id: result.discovery_id, include_items: true })
+        : result;
+      writeJsonFile({ value: full, out: parsed.flags.out, summary: result });
+      break;
+    }
+    case "content-discover-account-result": {
+      const discoveryId = parsed.positionals[0];
+      if (!discoveryId) throw new Error("Usage: video-learning content-discover-account-result <discovery_id>");
+      const summary = await tools.get_content_discover_account_result({ discovery_id: discoveryId, include_items: false });
+      const full = typeof parsed.flags.out === "string"
+        ? await tools.get_content_discover_account_result({ discovery_id: discoveryId, include_items: true })
+        : summary;
+      writeJsonFile({ value: full, out: parsed.flags.out, summary });
       break;
     }
     case "content-analyze-account": {
@@ -179,14 +250,11 @@ async function main(): Promise<void> {
         account_analysis_id: accountAnalysisId,
         format: (parsed.flags.format as AccountContentReportFormat | undefined) ?? "full",
       });
-      if (typeof parsed.flags.out === "string") {
-        const outPath = resolve(parsed.flags.out);
-        mkdirSync(dirname(outPath), { recursive: true });
-        writeFileSync(outPath, result.report);
-        printJson({ account_analysis_id: accountAnalysisId, format: result.format, path: outPath });
-        break;
-      }
-      console.log(result.report);
+      writeOrPrintReport({
+        report: result.report,
+        out: parsed.flags.out,
+        json: { account_analysis_id: accountAnalysisId, format: result.format },
+      });
       break;
     }
     case "search": {

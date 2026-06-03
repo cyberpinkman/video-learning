@@ -1,5 +1,6 @@
 import type { AccountContentAnalysisContent, ContentAnalysisContent, ContentAnalysisProvider, TranscriptSegmentRecord, VideoRecord } from "./types.ts";
 import { timeRange } from "./time.ts";
+import { apiKeyForTextProvider, baseUrlForTextProvider, endpointUrl, resolveTextProviderChain, type RemoteTextProvider, type TextProviderChoice } from "./text-provider.ts";
 
 interface ResponsesApiOutput {
   output_text?: string;
@@ -63,7 +64,15 @@ function chatOutputText(data: ChatCompletionsOutput): string {
 
 function jsonFromText(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const raw = fenced?.[1] ?? text;
+  const withoutThinking = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const raw = fenced?.[1] ?? withoutThinking;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
+  }
   return JSON.parse(raw);
 }
 
@@ -238,25 +247,6 @@ export function localAccountContentAnalysis(input: AnalyzeAccountContentInput, n
   };
 }
 
-function resolveProvider(): ContentAnalysisProvider | null {
-  const textProvider = process.env.VIDEO_LEARNING_TEXT_PROVIDER?.trim().toLowerCase();
-  if (textProvider && ["off", "none", "false", "0", "disabled"].includes(textProvider)) return null;
-  if (textProvider === "openai" || textProvider === "dashscope") return textProvider;
-  const visionProvider = process.env.VIDEO_LEARNING_VISION_PROVIDER?.trim().toLowerCase();
-  if (visionProvider && ["off", "none", "false", "0", "disabled"].includes(visionProvider)) return null;
-  if ((visionProvider === "dashscope" || visionProvider === "qwen" || visionProvider === "aliyun") && process.env.DASHSCOPE_API_KEY) return "dashscope";
-  if (visionProvider === "openai" && process.env.OPENAI_API_KEY) return "openai";
-  if (process.env.OPENAI_API_KEY) return "openai";
-  if (process.env.DASHSCOPE_API_KEY) return "dashscope";
-  return null;
-}
-
-function modelFor(provider: ContentAnalysisProvider): string {
-  if (provider === "openai") return process.env.VIDEO_LEARNING_TEXT_MODEL || process.env.VIDEO_LEARNING_VISION_MODEL || "gpt-4.1-mini";
-  if (provider === "dashscope") return process.env.VIDEO_LEARNING_TEXT_MODEL || process.env.VIDEO_LEARNING_VISION_MODEL || "qwen3.6-plus";
-  return "fallback";
-}
-
 function compactVideos(input: AnalyzeAccountContentInput): unknown[] {
   return input.videos.map(item => ({
     videoId: item.video.id,
@@ -311,10 +301,9 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
 }
 
 async function analyzeOpenAiPrompt(prompt: string, model: string, fallback: AccountContentAnalysisContent, allowedVideoIds: Set<string>): Promise<AccountContentAnalysisContent> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = apiKeyForTextProvider("openai");
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-  const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
-  const response = await fetchWithTimeout(`${baseUrl}/responses`, {
+  const response = await fetchWithTimeout(endpointUrl(baseUrlForTextProvider("openai"), "/responses"), {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -327,10 +316,9 @@ async function analyzeOpenAiPrompt(prompt: string, model: string, fallback: Acco
 }
 
 async function analyzeDashScopePrompt(prompt: string, model: string, fallback: AccountContentAnalysisContent, allowedVideoIds: Set<string>): Promise<AccountContentAnalysisContent> {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
+  const apiKey = apiKeyForTextProvider("dashscope");
   if (!apiKey) throw new Error("DASHSCOPE_API_KEY is not configured");
-  const baseUrl = process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1";
-  const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(endpointUrl(baseUrlForTextProvider("dashscope"), "/chat/completions"), {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -343,26 +331,50 @@ async function analyzeDashScopePrompt(prompt: string, model: string, fallback: A
   return normalizeAccountContent(jsonFromText(chatOutputText(await response.json() as ChatCompletionsOutput)), fallback, allowedVideoIds);
 }
 
+async function analyzeChatCompletionsPrompt(provider: Exclude<RemoteTextProvider, "openai" | "dashscope">, prompt: string, model: string, fallback: AccountContentAnalysisContent, allowedVideoIds: Set<string>): Promise<AccountContentAnalysisContent> {
+  const apiKey = apiKeyForTextProvider(provider);
+  if (!apiKey) throw new Error(`${provider} API key is not configured`);
+  const body: Record<string, unknown> = {
+    model,
+    messages: [{ role: "user", content: prompt }],
+    stream: false,
+  };
+  if (provider === "glm") body.thinking = { type: "disabled" };
+  const response = await fetchWithTimeout(endpointUrl(baseUrlForTextProvider(provider), "/chat/completions"), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`${provider} chat completions failed: ${response.status} ${await response.text()}`);
+  return normalizeAccountContent(jsonFromText(chatOutputText(await response.json() as ChatCompletionsOutput)), fallback, allowedVideoIds);
+}
+
+async function analyzeWithProvider(choice: TextProviderChoice, prompt: string, fallback: AccountContentAnalysisContent, allowedVideoIds: Set<string>): Promise<AccountContentAnalysisContent> {
+  if (choice.provider === "openai") return await analyzeOpenAiPrompt(prompt, choice.model, fallback, allowedVideoIds);
+  if (choice.provider === "dashscope") return await analyzeDashScopePrompt(prompt, choice.model, fallback, allowedVideoIds);
+  return await analyzeChatCompletionsPrompt(choice.provider, prompt, choice.model, fallback, allowedVideoIds);
+}
+
 export async function analyzeAccountContent(input: AnalyzeAccountContentInput): Promise<AccountContentAnalysisResult> {
   const fallback = localAccountContentAnalysis(input);
-  const provider = resolveProvider();
-  if (!provider || input.videos.length === 0) {
+  const providerChoices = resolveTextProviderChain();
+  if (providerChoices.length === 0 || input.videos.length === 0) {
     return { provider: "local", model: "fallback", content: fallback };
   }
-  const model = modelFor(provider);
   const allowedVideoIds = new Set(input.videos.map(item => item.video.id));
-  try {
-    const prompt = accountPrompt(input);
-    const content = provider === "openai"
-      ? await analyzeOpenAiPrompt(prompt, model, fallback, allowedVideoIds)
-      : await analyzeDashScopePrompt(prompt, model, fallback, allowedVideoIds);
-    return { provider, model, content };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      provider: "local",
-      model: "fallback",
-      content: localAccountContentAnalysis(input, `模型增强不可用：${message}`),
-    };
+  const prompt = accountPrompt(input);
+  const errors: string[] = [];
+  for (const choice of providerChoices) {
+    try {
+      const content = await analyzeWithProvider(choice, prompt, fallback, allowedVideoIds);
+      return { provider: choice.provider, model: choice.model, content };
+    } catch (error) {
+      errors.push(`${choice.provider}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+  return {
+    provider: "local",
+    model: "fallback",
+    content: localAccountContentAnalysis(input, `模型增强不可用：${errors.join("；") || "所有文本模型调用失败"}`),
+  };
 }

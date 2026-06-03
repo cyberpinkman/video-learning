@@ -71,6 +71,23 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
     },
   }, async input => toolResult(await handlers.get_content_analyze_single_report(input)));
 
+  server.registerTool("content_discover_account", {
+    description: "Discover the full local-visible Douyin account video list and, by default, acquire each discovered work as a local video asset.",
+    inputSchema: {
+      account_url: z.string().url(),
+      platform: z.enum(["douyin"]).optional(),
+      acquire_assets: z.boolean().optional(),
+    },
+  }, async input => toolResult(await handlers.content_discover_account(input)));
+
+  server.registerTool("get_content_discover_account_result", {
+    description: "Return a saved account video discovery result, optionally including full discovered items.",
+    inputSchema: {
+      discovery_id: z.string(),
+      include_items: z.boolean().optional(),
+    },
+  }, async input => toolResult(await handlers.get_content_discover_account_result(input)));
+
   server.registerTool("content_analyze_account", {
     description: "Analyze multiple videos from the same author account using transcript-only single-video content analyses.",
     inputSchema: {

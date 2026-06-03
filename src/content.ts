@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ContentAnalysisContent, ContentAnalysisProvider, TranscriptSegmentRecord } from "./types.ts";
 import { timeRange } from "./time.ts";
+import { apiKeyForTextProvider, baseUrlForTextProvider, endpointUrl, resolveTextProviderChain, type RemoteTextProvider, type TextProviderChoice } from "./text-provider.ts";
 
 interface ResponsesApiOutput {
   output_text?: string;
@@ -38,7 +39,15 @@ function chatOutputText(data: ChatCompletionsOutput): string {
 
 function jsonFromText(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const raw = fenced?.[1] ?? text;
+  const withoutThinking = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const raw = fenced?.[1] ?? withoutThinking;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
+  }
   return JSON.parse(raw);
 }
 
@@ -151,26 +160,6 @@ export function localContentAnalysis(transcript: TranscriptSegmentRecord[], note
   };
 }
 
-function resolveProvider(): ContentAnalysisProvider | null {
-  const textProvider = process.env.VIDEO_LEARNING_TEXT_PROVIDER?.trim().toLowerCase();
-  if (textProvider && ["off", "none", "false", "0", "disabled"].includes(textProvider)) return null;
-  if (textProvider === "openai" || textProvider === "dashscope") return textProvider;
-
-  const visionProvider = process.env.VIDEO_LEARNING_VISION_PROVIDER?.trim().toLowerCase();
-  if (visionProvider && ["off", "none", "false", "0", "disabled"].includes(visionProvider)) return null;
-  if ((visionProvider === "dashscope" || visionProvider === "qwen" || visionProvider === "aliyun") && process.env.DASHSCOPE_API_KEY) return "dashscope";
-  if (visionProvider === "openai" && process.env.OPENAI_API_KEY) return "openai";
-  if (process.env.OPENAI_API_KEY) return "openai";
-  if (process.env.DASHSCOPE_API_KEY) return "dashscope";
-  return null;
-}
-
-function modelFor(provider: ContentAnalysisProvider): string {
-  if (provider === "openai") return process.env.VIDEO_LEARNING_TEXT_MODEL || process.env.VIDEO_LEARNING_VISION_MODEL || "gpt-4.1-mini";
-  if (provider === "dashscope") return process.env.VIDEO_LEARNING_TEXT_MODEL || process.env.VIDEO_LEARNING_VISION_MODEL || "qwen3.6-plus";
-  return "fallback";
-}
-
 function contentPrompt(transcript: TranscriptSegmentRecord[]): string {
   return [
     "你是短视频内容策略分析师。只基于下面带时间戳的语音转写/字幕证据做内容分析。",
@@ -241,10 +230,9 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
 }
 
 async function analyzeOpenAiPrompt(prompt: string, model: string, fallback: ContentAnalysisContent): Promise<ContentAnalysisContent> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = apiKeyForTextProvider("openai");
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-  const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
-  const response = await fetchWithTimeout(`${baseUrl}/responses`, {
+  const response = await fetchWithTimeout(endpointUrl(baseUrlForTextProvider("openai"), "/responses"), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -261,10 +249,9 @@ async function analyzeOpenAiPrompt(prompt: string, model: string, fallback: Cont
 }
 
 async function analyzeDashScopePrompt(prompt: string, model: string, fallback: ContentAnalysisContent): Promise<ContentAnalysisContent> {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
+  const apiKey = apiKeyForTextProvider("dashscope");
   if (!apiKey) throw new Error("DASHSCOPE_API_KEY is not configured");
-  const baseUrl = process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1";
-  const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(endpointUrl(baseUrlForTextProvider("dashscope"), "/chat/completions"), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -281,16 +268,38 @@ async function analyzeDashScopePrompt(prompt: string, model: string, fallback: C
   return normalizeContent(parsed, fallback);
 }
 
-async function analyzeWithProvider(provider: ContentAnalysisProvider, model: string, prompt: string, fallback: ContentAnalysisContent): Promise<ContentAnalysisContent> {
-  return provider === "openai"
-    ? await analyzeOpenAiPrompt(prompt, model, fallback)
-    : await analyzeDashScopePrompt(prompt, model, fallback);
+async function analyzeChatCompletionsPrompt(provider: Exclude<RemoteTextProvider, "openai" | "dashscope">, prompt: string, model: string, fallback: ContentAnalysisContent): Promise<ContentAnalysisContent> {
+  const apiKey = apiKeyForTextProvider(provider);
+  if (!apiKey) throw new Error(`${provider} API key is not configured`);
+  const body: Record<string, unknown> = {
+    model,
+    messages: [{ role: "user", content: prompt }],
+    stream: false,
+  };
+  if (provider === "glm") body.thinking = { type: "disabled" };
+  const response = await fetchWithTimeout(endpointUrl(baseUrlForTextProvider(provider), "/chat/completions"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`${provider} chat completions failed: ${response.status} ${await response.text()}`);
+  const parsed = jsonFromText(chatOutputText(await response.json() as ChatCompletionsOutput));
+  return normalizeContent(parsed, fallback);
+}
+
+async function analyzeWithProvider(choice: TextProviderChoice, prompt: string, fallback: ContentAnalysisContent): Promise<ContentAnalysisContent> {
+  if (choice.provider === "openai") return await analyzeOpenAiPrompt(prompt, choice.model, fallback);
+  if (choice.provider === "dashscope") return await analyzeDashScopePrompt(prompt, choice.model, fallback);
+  return await analyzeChatCompletionsPrompt(choice.provider, prompt, choice.model, fallback);
 }
 
 export async function analyzeContentFromTranscript(transcript: TranscriptSegmentRecord[]): Promise<ContentAnalysisResult> {
   const transcriptHash = hashTranscript(transcript);
-  const provider = resolveProvider();
-  if (!provider || transcript.length === 0) {
+  const providerChoices = resolveTextProviderChain();
+  if (providerChoices.length === 0 || transcript.length === 0) {
     return {
       provider: "local",
       model: "fallback",
@@ -298,31 +307,31 @@ export async function analyzeContentFromTranscript(transcript: TranscriptSegment
       content: localContentAnalysis(transcript),
     };
   }
-  const model = modelFor(provider);
-  try {
-    const chunks = chunkTranscript(transcript, textChunkChars());
-    const fallback = localContentAnalysis(transcript, "文本模型响应不完整，已用本地字段补齐。");
-    const content = chunks.length > 1
-      ? await analyzeWithProvider(
-          provider,
-          model,
-          mergePrompt(transcript, await Promise.all(chunks.map(chunk => analyzeWithProvider(
-            provider,
-            model,
-            contentPrompt(chunk),
-            localContentAnalysis(chunk, "文本模型响应不完整，已用本地字段补齐。"),
-          )))),
-          fallback,
-        )
-      : await analyzeWithProvider(provider, model, contentPrompt(transcript), fallback);
-    return { provider, model, transcriptHash, content };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      provider: "local",
-      model: "fallback",
-      transcriptHash,
-      content: localContentAnalysis(transcript, `模型增强不可用：${message}`),
-    };
+  const errors: string[] = [];
+  for (const choice of providerChoices) {
+    try {
+      const chunks = chunkTranscript(transcript, textChunkChars());
+      const fallback = localContentAnalysis(transcript, "文本模型响应不完整，已用本地字段补齐。");
+      const content = chunks.length > 1
+        ? await analyzeWithProvider(
+            choice,
+            mergePrompt(transcript, await Promise.all(chunks.map(chunk => analyzeWithProvider(
+              choice,
+              contentPrompt(chunk),
+              localContentAnalysis(chunk, "文本模型响应不完整，已用本地字段补齐。"),
+            )))),
+            fallback,
+          )
+        : await analyzeWithProvider(choice, contentPrompt(transcript), fallback);
+      return { provider: choice.provider, model: choice.model, transcriptHash, content };
+    } catch (error) {
+      errors.push(`${choice.provider}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+  return {
+    provider: "local",
+    model: "fallback",
+    transcriptHash,
+    content: localContentAnalysis(transcript, `模型增强不可用：${errors.join("；") || "所有文本模型调用失败"}`),
+  };
 }
