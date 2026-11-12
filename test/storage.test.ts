@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { VideoLearningStore } from "../src/storage.ts";
@@ -25,6 +25,38 @@ test("ingesting the same file twice reuses the existing video by content hash", 
   expect(second.videoId).toBe(first.videoId);
   expect(second.created).toBe(false);
   expect(store.listVideos()).toHaveLength(1);
+});
+
+test("persisted local assets remain readable from another project directory", async () => {
+  const originalCwd = process.cwd();
+  const sourceDir = join(workdir, "source-project");
+  const otherDir = join(workdir, "other-project");
+  mkdirSync(sourceDir);
+  mkdirSync(otherDir);
+  writeFileSync(join(sourceDir, "clip.mp4"), "video evidence");
+  writeFileSync(join(sourceDir, "audio.wav"), "audio evidence");
+  const store = new VideoLearningStore({ dbPath: join(workdir, "video-learning.sqlite") });
+
+  try {
+    process.chdir(sourceDir);
+    const absoluteSourceDir = process.cwd();
+    const { videoId } = await store.ingestLocalFile({ path: "clip.mp4" });
+    store.addAsset(videoId, { kind: "audio", path: "audio.wav" });
+    process.chdir(otherDir);
+
+    const assets = store.listAssets(videoId);
+    for (const [kind, filename, content] of [
+      ["original_video", "clip.mp4", "video evidence"],
+      ["audio", "audio.wav", "audio evidence"],
+    ] as const) {
+      const asset = assets.find(item => item.kind === kind)!;
+      expect(asset.path).toBe(join(absoluteSourceDir, filename));
+      expect(readFileSync(asset.path, "utf8")).toBe(content);
+    }
+  } finally {
+    process.chdir(originalCwd);
+    store.close();
+  }
 });
 
 test("acquisition attempts redact secrets before they are persisted", () => {

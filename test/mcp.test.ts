@@ -52,14 +52,59 @@ async function connect(environment: Record<string, string> = {}) {
   return client;
 }
 
-test("status identifies the runtime and acquisition diagnostics contract", async () => {
+test("stdio clients in different projects share evidence and can export a report", async () => {
+  const first = await connect();
+  const listed = await first.listTools();
+  expect(listed.tools).toHaveLength(14);
+  expect(first.getInstructions()).toContain("absolute paths");
+  const status = await first.callTool({ name: "get_video_learning_status", arguments: {} });
+  expect(payload(status)?.workspace_dir).toBe(join(workdir, "library"));
+  expect(payload(status)?.video_count).toBe(0);
+  expect(payload(status)?.project_root).toBe(projectRoot);
+  expect(payload(status)?.cli_path).toBe(join(projectRoot, "src/cli.ts"));
+  expect(payload(status)?.acquisition_diagnostics_version).toBe(1);
+
+  const source = join(workdir, "source.mp4");
+  const media = Bun.spawn({
+    cmd: ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=160x90:d=2", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "2", "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p", source],
+    stdout: "pipe", stderr: "pipe",
+  });
+  await new Response(media.stderr).text();
+  expect(await media.exited).toBe(0);
+  writeFileSync(join(workdir, "source.srt"), "1\n00:00:00,000 --> 00:00:01,800\n用真实字幕说明一个具体观点。\n");
+  const imported = await first.callTool({ name: "ingest_video_file", arguments: { path: source } });
+  expect(imported.isError).not.toBe(true);
+  const videoId = payload(imported)?.video_id as string;
+  expect(videoId).toStartWith("vid_");
+  await first.close();
+
+  const second = await connect();
+  const search = await second.callTool({ name: "search_video_memory", arguments: { query: "source" } });
+  expect(payload(search)?.results).toMatchObject([{ video_id: videoId }]);
+  const analysis = await second.callTool({ name: "content_analyze_single", arguments: { video_id: videoId } });
+  expect(analysis.isError).not.toBe(true);
+  expect(payload(analysis)?.status).toBe("content_analyzed");
+  const outputPath = join(workdir, "caller project 1", "reports", "transcript.md");
+  const report = await second.callTool({ name: "get_content_analyze_single_report", arguments: { video_id: videoId, format: "transcript", output_path: outputPath } });
+  expect(report.isError).not.toBe(true);
+  expect(payload(report)?.path).toBe(outputPath);
+  expect(payload(report)?.report).toBeUndefined();
+  expect(readFileSync(outputPath, "utf8")).toContain("用真实字幕说明一个具体观点");
+}, 30000);
+
+test("MCP rejects ambiguous paths and reports acquisition and handler failures", async () => {
   const client = await connect();
-  const result = payload(await client.callTool({ name: "get_video_learning_status", arguments: {} }));
-  expect(result?.project_root).toBe(projectRoot);
-  expect(result?.cli_path).toBe(join(projectRoot, "src/cli.ts"));
-  expect(result?.workspace_dir).toBe(join(workdir, "library"));
-  expect(result?.db_path).toBe(join(workdir, "library/video-learning.sqlite"));
-  expect(result?.acquisition_diagnostics_version).toBe(1);
+  const relative = await client.callTool({ name: "ingest_video_file", arguments: { path: "clip.mp4" } });
+  expect(relative.isError).toBe(true);
+  expect(JSON.stringify(relative.content)).toContain("absolute filesystem path");
+  // Local has no URL adapter, so this deterministically fails without network access.
+  const failed = await client.callTool({ name: "acquire_video", arguments: { url: "https://example.invalid/video", platform: "local" } });
+  expect(payload(failed)?.status).toBe("failed");
+  expect(failed.isError).toBe(true);
+  const missing = await client.callTool({ name: "get_content_analyze_single_report", arguments: { video_id: "missing" } });
+  expect(missing.isError).toBe(true);
+  const alive = await client.callTool({ name: "get_video_learning_status", arguments: {} });
+  expect(alive.isError).not.toBe(true);
 });
 
 test.skipIf(process.env.VIDEO_LEARNING_RUN_BROWSER_TESTS !== "1")("browser failure evidence crosses subprocess, MCP and SQLite boundaries", async () => {

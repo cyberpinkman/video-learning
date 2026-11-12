@@ -7,6 +7,9 @@
     "video-learning": "src/cli.ts"
   },
   "scripts": {
+    "mcp": "bun run --no-env-file src/cli.ts mcp",
+    "mcp:install": "python3 scripts/install_codex_mcp.py",
+    "mcp:check": "bun run --no-env-file scripts/check_codex_mcp.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

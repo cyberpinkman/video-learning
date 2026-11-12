@@ -1,0 +1,10 @@
+interface:
+  display_name: "视频学习"
+  short_description: "跨项目获取视频、分析内容与镜头、总结账号策略并检索视频记忆"
+  default_prompt: "使用 $video-learning 分析这个视频，按我的需求总结内容或拆解镜头，并保留可追溯的证据。"
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "video-learning"
+      description: "本机全局 video-learning MCP，共用原项目的视频库与配置"

@@ -48,6 +48,43 @@ bun run src/cli.ts mcp
 
 默认数据目录：`~/.video-learning/`。
 
+## 安装到 Codex，跨项目使用
+
+本项目提供本地 stdio MCP。安装一次后，本机其他项目的新 Codex 会话可直接调用视频采集、转写内容分析、拉片、账号内容策略、对比、复拍与视频记忆检索，无须切回本目录。
+
+```bash
+# 在本项目执行，要求 Python 3.11+、Bun、Codex CLI 和已安装的项目依赖
+bun run mcp:install
+
+# 按全局配置从其他目录启动 MCP，验证握手、工具列表和资料库读取
+bun run mcp:check
+```
+
+安装器写入 `${CODEX_HOME:-~/.codex}/config.toml` 中的 `mcp_servers.video-learning`，并把配套技能安装到该 Codex home 的 `skills/video-learning/`。安装前会备份配置，保留其他服务器和设置。全局配置方式见 [Codex MCP 官方说明](https://developers.openai.com/codex/mcp)。
+
+安装默认复用**本项目 `.video-learning-data/video-learning.sqlite`**，不合并或替换 `~/.video-learning/` 的另一份资料库。服务采用绝对 Bun/项目/数据路径，固定工作目录，禁止 Bun 自动读取调用方的 `.env`；项目自己的 `.env`、`.env.local` 仍由现有配置加载器读取。凭据不会复制到 Codex 配置或调用方项目。素材和转写留在共享资料库，报告可保存到当前调用项目的绝对路径。
+
+可指定其他共享目录或已有数据库：
+
+```bash
+python3 scripts/install_codex_mcp.py --workspace /absolute/library --db /absolute/library/video-learning.sqlite
+```
+
+安装后新建 Codex 会话；若工具尚未加载，重启 Codex。可以直接说：
+
+- “用 video-learning 分析这个视频的口播结构：<链接>。”
+- “用 video-learning 检索之前分析过的 <作者/标题关键词>。”
+- “只列出这个抖音账号的作品，不下载：<账号主页>。”
+- “用 video-learning 拉片这个本地视频，把报告保存到当前项目的 reports 目录。”
+
+也可用 `$video-learning` 显式调用配套技能。先调用 `get_video_learning_status` 可查看实际库路径、视频数量、可执行程序、文本模型配置和采集 adapter。状态工具不检测平台登录或远程服务连通性。首次登录仍按下文平台登录说明完成；配置中的登录态可继续复用。
+
+MCP 的 `ingest_video_file.path` 和三个报告接口的 `output_path` 必须是绝对路径。完整报告或逐字稿推荐传 `output_path`：写入完整 Markdown 后返回文件路径与字节数；省略时返回报告正文。`content_discover_account` 默认逐条下载作品，仅列清单必须传 `acquire_assets: false`。
+
+安装默认启动超时为 30 秒、工具调用超时为 3600 秒，可通过 `--startup-timeout` / `--tool-timeout` 调整。账号全量下载或长视频转写可能超过该时间；超时不代表没有发生写入，应先检查已有结果。此安装依赖当前项目目录、`.venv` 与 Bun；搬移项目后重新运行安装器。检查命令仅验证本地 MCP 和资料库，不代表所有平台采集与云模型已端到端验证。
+
+卸载连接：`codex mcp remove video-learning`；如不再需要配套技能，可移除 Codex home 中的 `skills/video-learning/`。两者均无需删除共享视频资料。
+
 交付规则：
 
 - `/tmp` 只允许用于一次性 smoke test，不作为报告、数据库或可审阅产物的保存位置。
@@ -64,13 +101,13 @@ MCP 工具：
 - `acquire_video(url, platform?, strategy?)`
 - `ingest_video_file(path, platform?, source_url?)`
 - `deep_analyze_single(video_id, depth?)`
-- `get_deep_analyze_single_report(video_id, format?)`
+- `get_deep_analyze_single_report(video_id, format?, output_path?)`
 - `content_analyze_single(video_id)`
-- `get_content_analyze_single_report(video_id, format?)`
+- `get_content_analyze_single_report(video_id, format?, output_path?)`
 - `content_discover_account(account_url, platform?, acquire_assets?)`
 - `get_content_discover_account_result(discovery_id, include_items?)`
 - `content_analyze_account(video_ids[])`
-- `get_content_analyze_account_report(account_analysis_id, format?)`
+- `get_content_analyze_account_report(account_analysis_id, format?, output_path?)`
 - `compare_videos(target_id, reference_ids[])`
 - `search_video_memory(query, filters?)`
 - `make_recreation_plan(video_id, constraints?)`
