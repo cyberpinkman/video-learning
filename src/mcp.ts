@@ -1,19 +1,23 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
+import { resolve } from "node:path";
 import { createStore } from "./config.ts";
-import { createToolHandlers } from "./tools.ts";
+import { createToolHandlers, resolveWorkerPython } from "./tools.ts";
+import { listAdapterStatuses } from "./adapters.ts";
+import { apiKeyForTextProvider, resolveTextProviderChain } from "./text-provider.ts";
 
 function asStructuredObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   return { value };
 }
 
-function toolResult(value: unknown) {
+function toolResult(value: unknown, isError = false) {
   const structuredContent = asStructuredObject(value);
   return {
     content: [{ type: "text" as const, text: JSON.stringify(structuredContent, null, 2) }],
     structuredContent,
+    ...(isError ? { isError: true } : {}),
   };
 }
 
@@ -22,14 +26,40 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
   const handlers = createToolHandlers({ store, workspaceDir: config.workspaceDir });
   const server = new McpServer({ name: "video-learning", version: "0.1.0" });
 
+  server.registerTool("get_video_learning_status", {
+    description: "Check the shared library paths, video count, local executables, configured text models and download adapters. Does not call providers or return credentials. Executable presence does not verify login, model downloads or provider connectivity.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, async () => toolResult({
+    project_root: resolve(import.meta.dir, ".."),
+    cli_path: resolve(import.meta.dir, "cli.ts"),
+    acquisition_diagnostics_version: 1,
+    workspace_dir: config.workspaceDir,
+    db_path: config.dbPath,
+    video_count: store.listVideos().length,
+    runtime: {
+      bun: process.execPath,
+      python: Bun.which(resolveWorkerPython()),
+      ffmpeg: Bun.which("ffmpeg"),
+      ffprobe: Bun.which("ffprobe"),
+    },
+    text_providers: resolveTextProviderChain().map(choice => ({
+      ...choice, credential_configured: Boolean(apiKeyForTextProvider(choice.provider)),
+    })),
+    adapters: listAdapterStatuses().map(({ name, platforms, available, reason }) => ({ name, platforms, available, reason })),
+  }));
+
   server.registerTool("acquire_video", {
-    description: "Acquire a video from a supported platform URL using adapter fallback, then store it locally.",
+    description: "Acquire a video using adapter fallback and bounded browser recovery, then store it locally. Inspect failed attempts' error.code, phase, diagnostics_path and next_actions before choosing another route. Skipped adapters were not attempted. Do not assess a video's content from its title when acquisition fails.",
     inputSchema: {
       url: z.string().url(),
       platform: z.enum(["douyin", "wechat_channels", "xiaohongshu", "tiktok", "youtube", "local", "unknown"]).optional(),
       strategy: z.string().optional(),
     },
-  }, async input => toolResult(await handlers.acquire_video(input)));
+  }, async input => {
+    const result = await handlers.acquire_video(input);
+    return toolResult(result, result.status === "failed");
+  });
 
   server.registerTool("ingest_video_file", {
     description: "Import a local video or authorized screen recording into the local video-learning database.",

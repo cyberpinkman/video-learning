@@ -200,6 +200,7 @@ export interface DownloaderMetadata {
   author?: string | null;
   durationSec?: number | null;
   publishedAt?: string | null;
+  diagnosticsPath?: string;
 }
 
 export interface AcquisitionAttemptRecord extends Required<Omit<AcquisitionAttemptInput, "usedAccount" | "usedProxy" | "message" | "outputPath" | "outputHash">> {

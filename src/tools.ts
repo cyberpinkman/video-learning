@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import type { VideoLearningStore } from "./storage.ts";
 import { discoverAccountVideos } from "./account-discovery.ts";
 import { acquireVideo, type CommandRunner } from "./acquisition.ts";
+import { compactAcquisitionAttempts } from "./acquisition-diagnostics.ts";
 import { analyzeAccountContent } from "./account-content.ts";
 import { generateAccountContentReport } from "./account-content-report.ts";
 import { maybeEnrichShotsWithCloud } from "./cloud.ts";
@@ -232,7 +233,7 @@ async function acquireDiscoveredAssets(input: {
   items: AccountDiscoveredItem[];
 }): Promise<{ items: AccountDiscoveredItem[]; summary: Record<string, unknown> }> {
   const acquiredItems: AccountDiscoveredItem[] = [];
-  const failures: Array<{ platformVideoId: string; url: string; message: string }> = [];
+  const failures: Array<{ platformVideoId: string; url: string; message: string; attempts: Array<Record<string, unknown>> }> = [];
   const videoIds: string[] = [];
 
   for (const item of input.items) {
@@ -270,7 +271,7 @@ async function acquireDiscoveredAssets(input: {
         .filter(attempt => attempt.status === "failed")
         .map(attempt => `${attempt.adapter}: ${attempt.message ?? ""}`)
         .join("; ") || "asset acquisition failed");
-      failures.push({ platformVideoId: item.platformVideoId, url: item.url, message });
+      failures.push({ platformVideoId: item.platformVideoId, url: item.url, message, attempts: compactAcquisitionAttempts(acquired.attempts) });
       acquiredItems.push({
         ...item,
         acquiredVideoId: null,

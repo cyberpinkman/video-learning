@@ -60,6 +60,7 @@ bun run src/cli.ts mcp
 
 MCP 工具：
 
+- `get_video_learning_status()`
 - `acquire_video(url, platform?, strategy?)`
 - `ingest_video_file(path, platform?, source_url?)`
 - `deep_analyze_single(video_id, depth?)`
@@ -76,7 +77,7 @@ MCP 工具：
 
 ## Acquisition
 
-采集层是插件式 fallback，不把强抓取写死进核心。只有 `yt-dlp` 路径默认可直接执行；其他平台 adapter 必须显式配置命令，否则会记录为 `skipped`，不会假装已支持。
+采集层是插件式 fallback。`yt-dlp` 和浏览器媒体适配器提供内置入口；其他可选适配器需要显式配置，未配置时记录为 `skipped`，表示没有执行。
 
 - YouTube：`yt-dlp`
 - TikTok：默认 `yt-dlp`；可配置 `VIDEO_LEARNING_TIKTOK_API_CMD`
@@ -100,11 +101,21 @@ bun run src/cli.ts adapters
 .venv/bin/python scripts/adapters/browser_media_download.py "<URL>"
 ```
 
-该 wrapper 会用 Chromium 打开页面，从 `<video>`、页面脚本和网络响应中嗅探视频直链，下载到当前工作目录的 `downloads/`，最后输出 acquisition 可读的 JSON。需要登录态时可指定浏览器 profile：
+该 wrapper 会用 Chromium 打开页面，增量观察播放器与网络候选，在就绪截止时间内等待可见播放器的媒体。元数据在媒体就绪后读取；不再固定睡眠后点击任意坐标。下载使用每次调用独立的文件路径，失败不会删除以前成功的资产，最后输出 acquisition 可读的 JSON。需要登录态时可指定浏览器 profile：
 
 ```bash
 export VIDEO_LEARNING_BROWSER_PROFILE_DIR="$HOME/.video-learning/browser-profile"
 ```
+
+每次调用自动保存独立 `diagnostics/<run_id>/diagnostics.json`，包含阶段、耗时、页面/播放器摘要、候选计数、网络状态和恢复记录；不保存 Cookie、带签名的 URL 查询参数或原始 HTML。配置 `VIDEO_LEARNING_BROWSER_DEBUG_DIR` 可改变诊断根目录并额外保存截图。截图可能含账户界面，应留在本机。`VIDEO_LEARNING_BROWSER_READY_TIMEOUT_MS` 控制首次媒体就绪预算（默认 25 秒，限制 1–60 秒）。主文档或媒体网络失败、导航超时最多再进行一次导航恢复，额外预算不超过 10 秒；仅有原因未知的空候选，以及明确的播放登录门槛、验证挑战、不可用提示，都不会自动重试。
+
+失败结果的 `attempts[].error` 保留 `code`、`phase`、`retryable`、`diagnostics_path` 和 `next_actions`；成功 attempt 也保留诊断路径。这些信息同样进入数据库及账号作品批量获取的失败摘要。MCP 在采集失败时同时返回 `isError: true`，不丢失结构化证据。`no_media_candidates` 表示原因尚不明确，不能解释成视频已删除或账号过期；常驻“登录”按钮也不等于播放被登录门槛拦截。
+
+`get_video_learning_status` 返回实际 `project_root`、`cli_path`、`workspace_dir`、`db_path`、本地依赖和适配器配置，以及 `acquisition_diagnostics_version`。这些状态不证明平台登录或网络连通性。需要 CLI 诊断时，使用返回的绝对入口和同一资料库，保留既有配置。
+
+遇到失败应先读取本次诊断，核对运行时已尝试的恢复和真正可用的备用渠道；`skipped` 不算已尝试，抖音 `strategy: strong` 也不会凭空增加渠道。只有新证据支持时才追加一次外层获取，或核对同一作品的官方镜像。整条视频的内容评价须建立在完整媒体及覆盖全程口播的转写/字幕上；尚未取得正文时，交付实际阻塞和所需协助，不以标题评价代替。
+
+浏览器脚本在每次采集时重新启动，修改后下次调用即生效。已经运行的 MCP 进程不会热加载 TypeScript：重连或新建会话后，`get_video_learning_status.acquisition_diagnostics_version` 应为 `1`。
 
 账号作品发现：
 

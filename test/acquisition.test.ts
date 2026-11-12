@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { acquireVideo } from "../src/acquisition.ts";
 import { VideoLearningStore } from "../src/storage.ts";
+import { adapterCommandError, compactAcquisitionAttempts } from "../src/acquisition-diagnostics.ts";
 
 let workdir = "";
 
@@ -143,4 +144,66 @@ test("configured platform adapters parse generic downloader JSON output after br
   expect(result.status).toBe("success");
   expect(store.listVideos()[0]?.title).toBe("抖音标题");
   expect(store.listAcquisitionAttempts().map(attempt => attempt.status)).toEqual(["failed", "success"]);
+});
+
+test("structured adapter evidence survives acquisition and storage without credentials", async () => {
+  const store = new VideoLearningStore({ dbPath: join(workdir, "video-learning.sqlite") });
+  const diagnosticsPath = join(workdir, "diagnostics", "run", "diagnostics.json");
+  const result = await acquireVideo({
+    url: "https://www.douyin.com/video/123",
+    platform: "douyin",
+    workspaceDir: workdir,
+    store,
+    commandRunner: async () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "adapter log\n" + JSON.stringify({ error: {
+        code: "no_media_candidates", phase: "media_readiness", message: "Readiness deadline exhausted",
+        retryable: true, diagnostics_path: diagnosticsPath,
+        next_actions: ["inspect_diagnostics"],
+        details: { final_url: "https://www.douyin.com/video/123?signature=private-signature#private-fragment", cookies: "private-cookie", nested: { authorization: "private-auth" } },
+      } }),
+    }),
+  });
+  expect(result.status).toBe("failed");
+  expect(result.attempts[0]).toMatchObject({
+    adapter: "playwright-media-sniffer", status: "failed",
+    error: { code: "no_media_candidates", phase: "media_readiness", retryable: true, diagnostics_path: diagnosticsPath, next_actions: ["inspect_diagnostics"] },
+  });
+  const stored = JSON.parse(store.listAcquisitionAttempts()[0]!.message);
+  expect(stored.error.diagnostics_path).toBe(diagnosticsPath);
+  expect(stored.error.details.final_url).toBe("https://www.douyin.com/video/123");
+  expect(compactAcquisitionAttempts(result.attempts)[0]).toMatchObject({ error: { code: "no_media_candidates", diagnostics_path: diagnosticsPath } });
+  for (const secret of ["private-signature", "private-fragment", "private-cookie", "private-auth"]) {
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(stored)).not.toContain(secret);
+  }
+});
+
+test("successful adapters retain the diagnostic pointer alongside the acquired asset", async () => {
+  const store = new VideoLearningStore({ dbPath: join(workdir, "video-learning.sqlite") });
+  const path = join(workdir, "verified.mp4");
+  const diagnosticsPath = join(workdir, "diagnostics", "success", "diagnostics.json");
+  writeFileSync(path, "verified-video");
+  const result = await acquireVideo({
+    url: "https://www.douyin.com/video/456", platform: "douyin", workspaceDir: workdir, store,
+    commandRunner: async () => ({ exitCode: 0, stdout: JSON.stringify({ path, diagnostics_path: diagnosticsPath }), stderr: "" }),
+  });
+  expect(result.status).toBe("success");
+  expect(result.attempts[0]).toMatchObject({ status: "success", diagnostics_path: diagnosticsPath });
+  expect(JSON.parse(store.listAcquisitionAttempts()[0]!.message).diagnostics_path).toBe(diagnosticsPath);
+});
+
+test("legacy adapter failures remain readable but do not leak transport credentials", () => {
+  const stderr = [
+    "Navigation failed",
+    "Cookie: sessionid=private-session; sid_guard=private-guard",
+    "Authorization: Bearer private-bearer",
+    "GET https://private-user:private-pass@example.com/media?signature=private-signature#private-fragment",
+    JSON.stringify({ unexpected: true, cookies: "private-cookie", token: "private-token" }),
+  ].join("\n");
+  const error = adapterCommandError(stderr, "", "legacy");
+  expect(error.message).toContain("Navigation failed");
+  expect(error.message).toContain("https://example.com/media");
+  expect(error.message).not.toContain("private-");
 });

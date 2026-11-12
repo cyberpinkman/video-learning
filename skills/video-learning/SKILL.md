@@ -19,7 +19,7 @@ Use this skill when the user asks to analyze, deconstruct, imitate, recreate, or
 ## Workflow
 
 1. If the user gives a local file path or screen recording, call `ingest_video_file`.
-2. If the user gives a URL, call `acquire_video` with the apparent platform. If acquisition fails, ask for a local file or authorized screen recording.
+2. If the user gives a URL, call `acquire_video` with the apparent platform. Check the returned status and video identity; if acquisition fails, follow the recovery workflow below before asking for another input.
 3. For shot-level拉片/复拍 requests, call `deep_analyze_single` with `depth: "standard"` unless the user explicitly wants a very detailed breakdown; then use `depth: "deep"`.
 4. Call `get_deep_analyze_single_report`:
    - `full` for complete analysis.
@@ -35,6 +35,16 @@ Use this skill when the user asks to analyze, deconstruct, imitate, recreate, or
    - `brief` for compact account strategy summary.
 7. For imitation or production requests, call `make_recreation_plan` with any user constraints such as budget, location, equipment, product, persona, or target platform.
 8. For multiple references, use `compare_videos` after each video is deep-analyzed.
+
+## Acquisition recovery and evidence
+
+- Read `attempts` first. `skipped` means an adapter did not run. For a failed attempt, inspect `error.code`, `phase`, `retryable`, `diagnostics_path`, and `next_actions`, then read that invocation's diagnostic file. Successful attempts may also include `diagnostics_path`. An older string-only error calls for diagnosis; it does not prove the video is deleted, login is required, or the tool is unavailable.
+- Use `get_video_learning_status` to locate the actual `project_root`, `cli_path`, `workspace_dir`, `db_path`, and configured adapters. This reports local configuration, not verified platform login or connectivity. Inspect the failed page/player state and network evidence: a persistent login button is not a playback login gate, and an empty candidate list leaves the cause unknown.
+- The browser runtime uses bounded readiness waiting and at most one recovery navigation for evidenced network or navigation failures. Check its recovery history before taking another action. Add at most one outer acquisition only when new evidence supports it, such as a verified canonical URL for the same work or a resolved transient blocker. Do not loop under unchanged conditions; changing Douyin's `strategy` to `strong` alone does not add a retrieval route.
+- If local CLI diagnosis is needed, use the absolute entrypoint returned by the status tool with the same workspace/database and existing configuration. Record temporary diagnostic options. Do not copy another project's environment, switch arbitrary accounts/profiles, run concurrent jobs against one browser profile, or expose credentials.
+- Continue through relevant available routes, such as an authorized work page, an author's official mirror verified as the same work, or an already authorized recording/local file. Unconfigured fallback adapters do not count as attempted routes. A concrete login, verification challenge, or other user-action blocker should be handed back with the evidence and minimum required action; do not bypass it.
+- For a whole-video summary or credibility assessment, obtain the complete media and check that transcript/subtitles cover its speech without truncation or missing passages. Add visual evidence where meaning depends on the images. Partial evidence supports only a partial answer. Titles, descriptions, comments, and search snippets may locate sources, but cannot replace the video's content or justify a whole-video score.
+- If reasonable routes remain blocked, report what was attempted, the specific blocker, missing evidence, and minimum needed input. A later successful download does not by itself establish the original root cause or prove it was fixed.
 
 ## Output Bar
 
@@ -52,7 +62,7 @@ For content-analyze-single, a good answer includes:
 - 主题、目标受众、内容 hook。
 - 只基于 transcript 时间段的内容结构。
 - 核心论点、关键表达、关键词、可复用内容框架。
-- 明确标注模型增强状态和转写置信度。
+- 明确标注模型增强状态和转写置信度。内容分析的 `confidence` 不是视频主张的事实正确率；事实核查须另行验证其证据及适用条件。
 - 不包含景别、运镜、逐镜头表或复拍镜头清单。
 
 For content-analyze-account, a good answer includes:

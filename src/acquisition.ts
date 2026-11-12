@@ -4,6 +4,7 @@ import type { VideoLearningStore } from "./storage.ts";
 import { adaptersForPlatform, buildAdapterCommand, type AdapterDefinition } from "./adapters.ts";
 import { detectPlatform } from "./platform.ts";
 import { redactSecrets } from "./redact.ts";
+import { AcquisitionAdapterError, adapterCommandError, diagnosticPath, safeDiagnosticText } from "./acquisition-diagnostics.ts";
 import type { DownloaderMetadata, Platform } from "./types.ts";
 
 export interface CommandResult {
@@ -25,7 +26,7 @@ export interface AcquireVideoInput {
 }
 
 const defaultRunner: CommandRunner = async (command, options) => {
-  const proc = Bun.spawn({ cmd: command, cwd: options?.cwd, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn({ cmd: command, cwd: options?.cwd, stdout: "pipe", stderr: "pipe", env: process.env });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -46,6 +47,7 @@ function parseDownloaderStdout(stdout: string): DownloaderMetadata | null {
         author: data.author ?? data.uploader ?? data.channel ?? data.creator ?? null,
         durationSec: typeof data.durationSec === "number" ? data.durationSec : typeof data.duration === "number" ? data.duration : null,
         publishedAt: data.publishedAt ?? data.published_at ?? (data.upload_date ? String(data.upload_date) : null),
+        diagnosticsPath: diagnosticPath(data.diagnostics_path),
       };
     } catch {
       if (line.endsWith(".mp4") || line.endsWith(".webm") || line.endsWith(".mkv") || line.endsWith(".mov")) {
@@ -76,7 +78,7 @@ function ytDlpAdapter(definition: AdapterDefinition): Adapter {
         input.url,
       ];
       const result = await runner(command, { cwd: input.workspaceDir });
-      if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || "yt-dlp failed");
+      if (result.exitCode !== 0) throw adapterCommandError(result.stderr, result.stdout, definition.name);
       const parsed = parseDownloaderStdout(result.stdout);
       if (!parsed?.outputPath) throw new Error("yt-dlp did not report an output filepath");
       if (!existsSync(parsed.outputPath)) throw new Error(`yt-dlp reported missing output file: ${parsed.outputPath}`);
@@ -86,6 +88,7 @@ function ytDlpAdapter(definition: AdapterDefinition): Adapter {
         author: parsed.author,
         durationSec: parsed.durationSec,
         publishedAt: parsed.publishedAt,
+        diagnosticsPath: parsed.diagnosticsPath,
       };
     },
   };
@@ -113,7 +116,7 @@ function configuredCommandAdapter(definition: AdapterDefinition): Adapter {
       const command = commandForAdapter(input, definition);
       if (!command) throw new AdapterSkipped(`${definition.name} is not configured. ${definition.envVar ? `Set ${definition.envVar}` : definition.installHint}.`);
       const result = await runner([...command, input.url], { cwd: input.workspaceDir });
-      if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || `${definition.name} failed`);
+      if (result.exitCode !== 0) throw adapterCommandError(result.stderr, result.stdout, definition.name);
       const parsed = parseDownloaderStdout(result.stdout);
       if (!parsed?.outputPath) throw new Error(`${definition.name} did not report an output filepath`);
       if (!existsSync(parsed.outputPath)) throw new Error(`${definition.name} reported missing output file: ${parsed.outputPath}`);
@@ -123,6 +126,7 @@ function configuredCommandAdapter(definition: AdapterDefinition): Adapter {
         author: parsed.author,
         durationSec: parsed.durationSec,
         publishedAt: parsed.publishedAt,
+        diagnosticsPath: parsed.diagnosticsPath,
       };
     },
   };
@@ -166,12 +170,13 @@ export async function acquireVideo(input: AcquireVideoInput): Promise<{ video_id
         usedProxy: adapter.usedProxy,
         outputPath: result.outputPath,
         outputHash: ingested.contentHash,
-        message: "downloaded",
+        message: result.diagnosticsPath ? JSON.stringify({ message: "downloaded", diagnostics_path: result.diagnosticsPath }) : "downloaded",
       });
-      attempts.push({ adapter: adapter.name, status: "success" });
+      attempts.push({ adapter: adapter.name, status: "success", ...(result.diagnosticsPath ? { diagnostics_path: result.diagnosticsPath } : {}) });
       return { video_id: ingested.videoId, status: "success", attempts };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = safeDiagnosticText(error instanceof Error ? error.message : String(error));
+      const evidence = error instanceof AcquisitionAdapterError ? error.evidence : null;
       const skipped = error instanceof AdapterSkipped;
       input.store.logAcquisitionAttempt({
         platform,
@@ -181,9 +186,9 @@ export async function acquireVideo(input: AcquireVideoInput): Promise<{ video_id
         status: skipped ? "skipped" : "failed",
         usedAccount: adapter.usedAccount,
         usedProxy: adapter.usedProxy,
-        message: redactSecrets(message),
+        message: evidence ? JSON.stringify({ message, error: evidence }) : redactSecrets(message),
       });
-      attempts.push({ adapter: adapter.name, status: skipped ? "skipped" : "failed", message: redactSecrets(message) });
+      attempts.push({ adapter: adapter.name, status: skipped ? "skipped" : "failed", message: redactSecrets(message), ...(evidence ? { error: evidence } : {}) });
     }
   }
   return { video_id: null, status: "failed", attempts };
