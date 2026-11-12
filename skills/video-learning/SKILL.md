@@ -1,82 +1,60 @@
 ---
 name: video-learning
-description: |
-  Analyze, deconstruct, compare, and recreate social videos using the local video-learning MCP tools. Use deep-analyze-single for shot-level recreation analysis, content-analyze-single for transcript-only single-video content analysis, and content-analyze-account for same-author multi-video strategy analysis.
+description: "通过全局 video-learning MCP 获取短视频、分析口播内容、拉片、发现抖音账号作品、总结账号内容策略，并检索已保存的视频记忆。用户提供视频链接、本地视频或账号主页，要求学习内容、镜头拆解、对比或复拍时使用。"
 ---
 
 # Video Learning
 
-Use this skill when the user asks to analyze, deconstruct, imitate, recreate, or learn from a target video.
+使用已安装的 `video-learning` MCP。按用户请求选择内容分析、视觉拉片或复拍；默认中文，不把内容总结扩展成拍摄任务。
 
-## Contract
+## 跨项目调用
 
-- Use the `video-learning` MCP tools as the evidence source; do not produce a recreation analysis from memory alone.
-- Default output language is Chinese.
-- Every important claim must point to a timestamp, shot row, transcript segment, or stored report.
-- The output must be directly usable for shooting and editing: script, shot list, scene/prop/light notes, shooting order, edit steps.
-- Use only this project's MCP tools, local database, and timestamped evidence.
+- MCP 在服务端使用固定的项目目录和既有 `.video-learning-data` 视频库；不同项目会话可复用同一批 `video_id` 和报告。
+- 凭据由服务端从原项目 `.env.local` 读取，不向当前项目复制配置或在对话中展示凭据。
+- 初次使用或排查不可用能力时，调用 `get_video_learning_status` 查看服务路径、依赖和配置状态。配置存在不等于平台登录、网络访问或云服务请求已验证成功。
+- MCP 的本地文件参数必须传绝对路径，尤其是 `ingest_video_file.path`。将用户的相对路径按当前会话工作目录解析后再传入，不能按 MCP 的工作目录猜测。
+- 若当前会话找不到这些工具，说明工具尚未加载；提示新建会话或重启 Codex 后重试。不要从其他项目运行相对路径脚本来代替全局 MCP。
 
-## Workflow
+## 单视频与记忆
 
-1. If the user gives a local file path or screen recording, call `ingest_video_file`.
-2. If the user gives a URL, call `acquire_video` with the apparent platform. Check the returned status and video identity; if acquisition fails, follow the recovery workflow below before asking for another input.
-3. For shot-level拉片/复拍 requests, call `deep_analyze_single` with `depth: "standard"` unless the user explicitly wants a very detailed breakdown; then use `depth: "deep"`.
-4. Call `get_deep_analyze_single_report`:
-   - `full` for complete analysis.
-   - `shooting_brief` for a practical filming plan.
-   - `shot_list` for a shot table.
-   - `edit_brief` for editing rhythm and structure.
-5. For transcript-only content requests, call `content_analyze_single`, then `get_content_analyze_single_report`:
-   - `full` for content structure, arguments, reusable framework, and transcript evidence.
-   - `brief` for a compact content summary.
-   - `transcript` for timestamped transcript only.
-6. For same-author multi-video account content strategy requests, call `content_analyze_account` with explicit `video_ids`, then `get_content_analyze_account_report`:
-   - `full` for account positioning, content pillars, hook patterns, reusable templates, representative videos, and risks.
-   - `brief` for compact account strategy summary.
-7. For imitation or production requests, call `make_recreation_plan` with any user constraints such as budget, location, equipment, product, persona, or target platform.
-8. For multiple references, use `compare_videos` after each video is deep-analyzed.
+1. 用户提到已分析的视频时，先用 `search_video_memory` 按标题、作者或平台检索，可传 `filters.platform`；这是元数据匹配，不是全文或语义检索。空 `query` 可列出库内视频。
+2. 新视频链接用 `acquire_video`；本地视频或已获授权的录屏用 `ingest_video_file`。使用实际返回的 `video_id`，检查作品身份、可播放性与时长，不把采集失败当作已入库。失败时先走下方恢复流程。
+3. 根据任务选择工具：
 
-## Acquisition recovery and evidence
+| 用户目的 | 分析与读取结果 |
+| --- | --- |
+| 口播、文案、观点、内容结构 | `content_analyze_single` → `get_content_analyze_single_report`，`format` 为 `full`、`brief` 或 `transcript` |
+| 镜头拆解、节奏、视觉拉片 | `deep_analyze_single`，通常 `depth: "standard"`，明确要求精细拆解时用 `deep` → `get_deep_analyze_single_report` |
+| 复拍或制作方案 | 先获得深度分析，再用 `make_recreation_plan` 传入预算、场地、设备等实际约束 |
+| 多视频镜头与节奏对比 | 各视频先完成深度分析，再用 `compare_videos` 传入 `target_id` 与 `reference_ids` |
 
-- Read `attempts` first. `skipped` means an adapter did not run. For a failed attempt, inspect `error.code`, `phase`, `retryable`, `diagnostics_path`, and `next_actions`, then read that invocation's diagnostic file. Successful attempts may also include `diagnostics_path`. An older string-only error calls for diagnosis; it does not prove the video is deleted, login is required, or the tool is unavailable.
-- Use `get_video_learning_status` to locate the actual `project_root`, `cli_path`, `workspace_dir`, `db_path`, and configured adapters. This reports local configuration, not verified platform login or connectivity. Inspect the failed page/player state and network evidence: a persistent login button is not a playback login gate, and an empty candidate list leaves the cause unknown.
-- The browser runtime uses bounded readiness waiting and at most one recovery navigation for evidenced network or navigation failures. Check its recovery history before taking another action. Add at most one outer acquisition only when new evidence supports it, such as a verified canonical URL for the same work or a resolved transient blocker. Do not loop under unchanged conditions; changing Douyin's `strategy` to `strong` alone does not add a retrieval route.
-- If local CLI diagnosis is needed, use the absolute entrypoint returned by the status tool with the same workspace/database and existing configuration. Record temporary diagnostic options. Do not copy another project's environment, switch arbitrary accounts/profiles, run concurrent jobs against one browser profile, or expose credentials.
-- Continue through relevant available routes, such as an authorized work page, an author's official mirror verified as the same work, or an already authorized recording/local file. Unconfigured fallback adapters do not count as attempted routes. A concrete login, verification challenge, or other user-action blocker should be handed back with the evidence and minimum required action; do not bypass it.
-- For a whole-video summary or credibility assessment, obtain the complete media and check that transcript/subtitles cover its speech without truncation or missing passages. Add visual evidence where meaning depends on the images. Partial evidence supports only a partial answer. Titles, descriptions, comments, and search snippets may locate sources, but cannot replace the video's content or justify a whole-video score.
-- If reasonable routes remain blocked, report what was attempted, the specific blocker, missing evidence, and minimum needed input. A later successful download does not by itself establish the original root cause or prove it was fixed.
+深度报告格式按任务选 `full`、`shooting_brief`、`shot_list` 或 `edit_brief`。内容分析只依据转写或字幕，不推断景别、运镜、画面、音效；需要视觉证据时再选择深度分析。
 
-## Output Bar
+整条视频的总结、事实核查或可信度评价，需要取得完整视频，并核对转写/字幕是否覆盖全程口播、有无截断或缺段；视觉主导的内容另补画面证据。仅有局部证据时只回答该部分。标题、简介、评论和搜索结果可帮助定位来源，不能代替视频正文作整条评价。
 
-A good answer includes:
+## 采集失败后的恢复
 
-- 前 3 秒 hook 拆解。
-- 全片结构：开场、承接、高潮、收尾。
-- 逐镜头表 or a summarized shot list with timestamps.
-- 节奏指标：镜头数、平均镜头时长、字幕密度、口播速度、B-roll 比例.
-- 复拍方案：脚本、镜头清单、场景/道具/光线、拍摄顺序、剪辑步骤.
-- 风险提示：可借鉴、不可照搬、需替换的素材或表达。
+- 先读 `attempts`：区分实际失败与 `skipped`（未配置、未执行）。有结构化 `error` 时检查 `code`、`phase`、`retryable`、`diagnostics_path`、`next_actions`，读取对应本次诊断；成功尝试也可带 `diagnostics_path`。旧版只有错误字符串时，应先补诊断，不据此断言视频不存在、必须登录或工具不可用。
+- `get_video_learning_status` 提供实际 `project_root`、`cli_path`、`workspace_dir`、`db_path` 及适配器配置，仅确认本地状态。结合本次最终页面、播放器状态、媒体候选及网络失败摘要定位卡在哪一层；通用“登录”入口不等于登录拦截，空候选不等于视频已删除，后续成功也不证明已修复根因。
+- 浏览器运行时有界等待媒体就绪，仅对有网络失败或导航超时证据的情况最多恢复导航一次；先核对实际尝试记录，不在外层对相同条件循环重试。仅当诊断支持暂态失败、或已验证短链落点可规范为同一作品长链时，最多追加一次有依据的采集；比较前后证据。对抖音把 `strategy` 改成 `strong` 本身不会增加已配置的获取渠道，不能把它当作新的方案。
+- 需要同机 CLI 诊断时，先核对状态返回的数据目录及实际服务项目路径，使用该项目的绝对入口和同一资料库；保留原配置，记录此次临时诊断选项。不要复制其他项目的环境、随意切换账户/profile、并发占用同一浏览器 profile，或把 Cookie/token/代理值写入输出。
+- 当前路径仍失败时，继续使用与该作品有关的可用路径：已授权的作品页读取、作者官方镜像（核对作者、时长和内容），或已获授权的录屏/本地文件导入。不要把未配置的备用适配器算作已尝试。遇到明确的登录、验证码或其他需用户处理的阻塞，说明证据并请求完成最小必要操作；不自动绕过。
+- 合理路径仍不可用时，交付已尝试的方法、具体阻塞和缺失证据，提出最小所需输入。**未取得完整内容，不给整条视频的可信度评分，也不以标题评价代替用户要求的内容核查。**
 
-For content-analyze-single, a good answer includes:
+## 账号发现与内容策略
 
-- 主题、目标受众、内容 hook。
-- 只基于 transcript 时间段的内容结构。
-- 核心论点、关键表达、关键词、可复用内容框架。
-- 明确标注模型增强状态和转写置信度。内容分析的 `confidence` 不是视频主张的事实正确率；事实核查须另行验证其证据及适用条件。
-- 不包含景别、运镜、逐镜头表或复拍镜头清单。
+- 账号主页发现目前支持抖音。仅查看作品、数量或链接清单时，调用 `content_discover_account` **显式传 `acquire_assets: false`**；省略该字段会下载发现的作品。
+- 用户明确要求全量采集、入库，或采集并分析整个账号时，传 `acquire_assets: true`。用户指定部分视频或已有 `video_ids` 时只处理指定范围。
+- 用返回的 `discovery_id` 调用 `get_content_discover_account_result`；需要完整清单时传 `include_items: true`。检查发现状态、预计数量、发现数量、采集成功及失败数量。受平台可见性影响，发现成功不自动证明覆盖账号全部历史作品。
+- 使用实际采集成功的 `video_ids` 调用 `content_analyze_account`。该工具要求同一作者且每条视频有非空转写；会补做缺失的单视频内容分析，不需要逐条重复分析。分析只使用这些视频的单视频内容分析和转写证据；不在分析过程中抓取账号主页，不做跨账号对比或视觉推断。
+- 读取 `get_content_analyze_account_report`，传返回的 `account_analysis_id`，按需求选 `full` 或 `brief`。报告包括账号定位、目标受众、内容支柱、Hook 模式、论点结构、关键词、代表视频、可复用模板、机会点和风险；每个账号级结论都引用参与视频 id 和 transcript 时间段证据。
+- 部分采集失败、转写缺失或账号覆盖不完整时，说明缺口和实际样本范围；不能悄悄排除失败视频后宣称完成全量分析。
 
-For content-analyze-account, a good answer includes:
+## 报告与证据
 
-- 账号定位、目标受众、内容支柱。
-- Hook 模式、论点结构、关键词和代表视频。
-- 可复用内容模板、机会点和风险提示。
-- 每个账号级结论都引用参与视频 id 和 transcript 时间段证据。
-- 任一参与视频缺少非空转写证据时，不生成账号策略总结。
-- 不做账号主页抓取、跨账号对比或视觉分析。
-
-## Anti-Patterns
-
-- Do not answer with generic praise like “节奏很好” or “风格很强” without timestamp evidence.
-- Do not invent platform metadata, transcript text, or visual details that the tools did not produce.
-- Do not expose cookies, tokens, proxy addresses, or account details from acquisition logs.
-- Do not claim a platform URL was downloaded if `acquire_video` returned failure.
+- 每个重要内容结论都需对应时间戳、镜头行、转写片段或已存报告。不能仅凭记忆、标题或笼统评价生成分析，也不能编造平台元数据、转写和画面细节。
+- 三个 `get_*_report` 工具都支持 `output_path`。完整报告或转写建议写入当前用户项目的 `reports/` 目录（或用户指定位置），传绝对文件路径；返回文件路径和字节数，不再返回报告正文。简报可省略该参数直接阅读。交付时链接生成文件并概括结果。
+- 保留相关视频/报告 ID 及时间戳证据。单视频内容报告只基于转写讨论主题、受众、hook、内容结构、论点、关键表达、关键词和可复用框架；不混入镜头或复拍分析。复拍任务则交付可执行脚本、镜头表、场景/道具/灯光、拍摄顺序与剪辑步骤。
+- 区分工具确认的事实、基于证据的推断和未知部分。按返回结果说明转写置信度、模型增强状态及分析限制；工具未提供的信息不要编造。内容分析的 `confidence` 描述证据/分析状态，不是视频主张的事实正确率；事实评价须逐项核对原始来源及适用条件。
+- 对比工具主要返回镜头数与平均镜头时长，复拍工具可能返回基础模板；依据已有证据和用户约束补充建议时，明确其为建议，不冒充已观测事实。
+- 不披露采集日志中的 cookies、tokens、代理或认证细节；只分享诊断中与问题有关的脱敏摘要。

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { sha256File } from "./hash.ts";
@@ -204,9 +204,10 @@ export class VideoLearningStore {
   }
 
   async ingestLocalFile(input: { path: string; platform?: Platform; sourceUrl?: string | null }): Promise<{ videoId: string; created: boolean; contentHash: string }> {
-    const stat = statSync(input.path);
-    if (!stat.isFile()) throw new Error(`Not a regular file: ${input.path}`);
-    const contentHash = await sha256File(input.path);
+    const path = resolve(input.path);
+    const stat = statSync(path);
+    if (!stat.isFile()) throw new Error(`Not a regular file: ${path}`);
+    const contentHash = await sha256File(path);
     const existing = this.findVideoByHash(contentHash);
     if (existing) {
       return { videoId: existing.id, created: false, contentHash };
@@ -215,7 +216,7 @@ export class VideoLearningStore {
     const videoId = this.createVideoRecord({
       platform: input.platform ?? "local",
       sourceUrl: input.sourceUrl ? redactSecrets(input.sourceUrl) : null,
-      title: basename(input.path),
+      title: basename(path),
       author: null,
       publishedAt: null,
       durationSec: null,
@@ -224,7 +225,7 @@ export class VideoLearningStore {
     });
     this.addAsset(videoId, {
       kind: "original_video",
-      path: input.path,
+      path,
       mimeType: "video/mp4",
       contentHash,
       metadata: { source: "local_file" },
@@ -273,7 +274,7 @@ export class VideoLearningStore {
     this.db.query(`
       INSERT INTO assets (id, video_id, kind, path, mime_type, content_hash, metadata, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(assetId, videoId, input.kind, input.path, input.mimeType ?? null, input.contentHash ?? null, JSON.stringify(input.metadata ?? {}), nowIso());
+    `).run(assetId, videoId, input.kind, resolve(input.path), input.mimeType ?? null, input.contentHash ?? null, JSON.stringify(input.metadata ?? {}), nowIso());
     return assetId;
   }
 

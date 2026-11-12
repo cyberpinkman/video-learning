@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { createStore } from "./config.ts";
 import { createToolHandlers, resolveWorkerPython } from "./tools.ts";
 import { listAdapterStatuses } from "./adapters.ts";
@@ -21,10 +22,23 @@ function toolResult(value: unknown, isError = false) {
   };
 }
 
+const absolutePath = z.string().min(1).refine(isAbsolute, "Use an absolute filesystem path; the MCP server does not run in the caller's project directory.");
+const reportOutputPath = absolutePath.optional().describe("Save the full Markdown report to this absolute path and return its path instead of its contents. Recommended for full reports and transcripts.");
+
+function reportResult(value: { report: string } & Record<string, unknown>, outputPath?: string) {
+  if (!outputPath) return toolResult(value);
+  const { report, ...metadata } = value;
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, report, "utf8");
+  return toolResult({ ...metadata, path: outputPath, bytes: Buffer.byteLength(report, "utf8") });
+}
+
 export async function runMcpServer(args: { dbPath?: string; workspaceDir?: string } = {}): Promise<void> {
   const { store, config } = createStore({ dbPath: args.dbPath, workspaceDir: args.workspaceDir });
   const handlers = createToolHandlers({ store, workspaceDir: config.workspaceDir });
-  const server = new McpServer({ name: "video-learning", version: "0.1.0" });
+  const server = new McpServer({ name: "video-learning", version: "0.1.0" }, {
+    instructions: "Shared local video library across projects. Use absolute paths for local files and report output_path. Search existing videos before acquiring again. Use content_analyze_single for speech/subtitles; deep_analyze_single for shot/visual analysis. Account discovery downloads every work by default: set acquire_assets=false for list-only requests. Check status and asset_status; partial evidence is not a complete account. Save long reports with output_path. get_video_learning_status shows paths and dependencies.",
+  });
 
   server.registerTool("get_video_learning_status", {
     description: "Check the shared library paths, video count, local executables, configured text models and download adapters. Does not call providers or return credentials. Executable presence does not verify login, model downloads or provider connectivity.",
@@ -64,7 +78,7 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
   server.registerTool("ingest_video_file", {
     description: "Import a local video or authorized screen recording into the local video-learning database.",
     inputSchema: {
-      path: z.string(),
+      path: absolutePath.describe("Absolute path to a local video or authorized screen recording."),
       platform: z.enum(["douyin", "wechat_channels", "xiaohongshu", "tiktok", "youtube", "local", "unknown"]).optional(),
       source_url: z.string().optional(),
     },
@@ -83,8 +97,9 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
     inputSchema: {
       video_id: z.string(),
       format: z.enum(["full", "shooting_brief", "shot_list", "edit_brief"]).optional(),
+      output_path: reportOutputPath,
     },
-  }, async input => toolResult(await handlers.get_deep_analyze_single_report(input)));
+  }, async input => reportResult(await handlers.get_deep_analyze_single_report(input), input.output_path));
 
   server.registerTool("content_analyze_single", {
     description: "Analyze a single video only from speech transcript or subtitle evidence, without shot or vision analysis.",
@@ -98,8 +113,9 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
     inputSchema: {
       video_id: z.string(),
       format: z.enum(["full", "brief", "transcript"]).optional(),
+      output_path: reportOutputPath,
     },
-  }, async input => toolResult(await handlers.get_content_analyze_single_report(input)));
+  }, async input => reportResult(await handlers.get_content_analyze_single_report(input), input.output_path));
 
   server.registerTool("content_discover_account", {
     description: "Discover the full local-visible Douyin account video list and, by default, acquire each discovered work as a local video asset.",
@@ -130,8 +146,9 @@ export async function runMcpServer(args: { dbPath?: string; workspaceDir?: strin
     inputSchema: {
       account_analysis_id: z.string(),
       format: z.enum(["full", "brief"]).optional(),
+      output_path: reportOutputPath,
     },
-  }, async input => toolResult(await handlers.get_content_analyze_account_report(input)));
+  }, async input => reportResult(await handlers.get_content_analyze_account_report(input), input.output_path));
 
   server.registerTool("compare_videos", {
     description: "Compare a target video with reference videos for reusable structure and shooting patterns.",
